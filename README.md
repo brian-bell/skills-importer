@@ -15,6 +15,10 @@ Codex skills.
 - Enable, disable, promote, and delete skills with filesystem safety checks.
 - Run a JSON automation interface or an interactive ratatui terminal UI.
 
+Internally, resolved operations flow through a shared workflow module, and the
+JSON adapter renders those outcomes for automation consumers. Command parsing
+and root defaulting stay at the CLI/runtime edge.
+
 ## Development
 
 ```bash
