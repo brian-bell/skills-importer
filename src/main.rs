@@ -685,11 +685,6 @@ fn find_catalog_repo_root(current_dir: &Path) -> Option<PathBuf> {
         .find(|ancestor| {
             ancestor.join("AGENTS.md").is_file()
                 && ancestor.join("catalog").join("portable").is_dir()
-                && ancestor
-                    .join("tools")
-                    .join("skill-importer")
-                    .join("Cargo.toml")
-                    .is_file()
         })
         .map(Path::to_path_buf)
 }
@@ -917,15 +912,13 @@ description: Imported from a URL through the command.
     }
 
     #[test]
-    fn default_roots_use_repo_catalog_when_launched_from_nested_directory() {
+    fn default_roots_use_skills_catalog_when_launched_from_nested_directory() {
         let temp = tempfile::tempdir().expect("tempdir");
         let repo_root = temp.path();
         let catalog_root = repo_root.join("catalog").join("portable");
-        let nested = repo_root.join("tools").join("skill-importer");
+        let nested = repo_root.join("docs").join("nested");
         std::fs::write(repo_root.join("AGENTS.md"), "# Test repo\n").expect("agents");
         std::fs::create_dir_all(nested.as_path()).expect("nested dir");
-        std::fs::write(nested.join("Cargo.toml"), "[package]\nname = \"test\"\n")
-            .expect("crate manifest");
         std::fs::create_dir_all(&catalog_root).expect("catalog root");
 
         assert_eq!(default_canonical_root(&nested), catalog_root);
