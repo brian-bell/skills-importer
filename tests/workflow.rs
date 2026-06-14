@@ -227,7 +227,7 @@ fn workflow_import_repository_uses_injected_provider_and_preserves_selection() {
         &roots,
         workflow::OperationRequest::ImportRepository(ImportRepositoryRequest {
             repository: "https://example.test/repo.git",
-            selected_skill_path: None,
+            selected_skill_paths: &[],
         }),
         &UnusedFetcher,
         &provider,

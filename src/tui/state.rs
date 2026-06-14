@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use crate::{
     AgentEnablement, AgentEntries, AgentEntryStatus, RepositorySkillSelection, SkillAgent,
     SkillEntry, SkillInventory, SkillSource,
@@ -35,6 +37,7 @@ pub enum AppInteractionMode {
     RepositorySelection {
         selection: RepositorySkillSelection,
         selected_candidate: usize,
+        checked_candidate_paths: BTreeSet<String>,
     },
 }
 
@@ -60,6 +63,8 @@ pub struct CandidateView {
     pub description: Option<String>,
     pub relative_path: String,
     pub selected: bool,
+    pub focused: bool,
+    pub checked: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,9 +120,11 @@ impl AppState {
                 self.mode = AppInteractionMode::RepositorySelection {
                     selection,
                     selected_candidate: 0,
+                    checked_candidate_paths: BTreeSet::new(),
                 };
             }
             AppAction::MoveRepositoryCandidate(delta) => self.move_repository_candidate(delta),
+            AppAction::ToggleRepositoryCandidate => self.toggle_repository_candidate(),
             AppAction::ChooseRepositoryCandidate => self.choose_repository_candidate(),
             AppAction::CancelRepositorySelection => {
                 self.mode = AppInteractionMode::Main;
@@ -202,6 +209,7 @@ impl AppState {
             AppInteractionMode::RepositorySelection {
                 selection,
                 selected_candidate,
+                checked_candidate_paths,
             } => selection
                 .skills
                 .iter()
@@ -211,6 +219,8 @@ impl AppState {
                     description: candidate.description.clone(),
                     relative_path: candidate.relative_path.clone(),
                     selected: index == *selected_candidate,
+                    focused: index == *selected_candidate,
+                    checked: checked_candidate_paths.contains(&candidate.relative_path),
                 })
                 .collect(),
             _ => Vec::new(),
@@ -235,6 +245,7 @@ impl AppState {
             ],
             AppInteractionMode::RepositorySelection { .. } => vec![
                 "j/k candidate".to_string(),
+                "space select".to_string(),
                 "enter import".to_string(),
                 "esc cancel".to_string(),
             ],
@@ -357,6 +368,7 @@ impl AppState {
         let AppInteractionMode::RepositorySelection {
             selection,
             selected_candidate,
+            ..
         } = &mut self.mode
         else {
             return;
@@ -370,18 +382,46 @@ impl AppState {
         };
     }
 
+    fn toggle_repository_candidate(&mut self) {
+        let AppInteractionMode::RepositorySelection {
+            selection,
+            selected_candidate,
+            checked_candidate_paths,
+        } = &mut self.mode
+        else {
+            return;
+        };
+        let Some(candidate) = selection.skills.get(*selected_candidate) else {
+            return;
+        };
+        if !checked_candidate_paths.insert(candidate.relative_path.clone()) {
+            checked_candidate_paths.remove(&candidate.relative_path);
+        }
+    }
+
     fn choose_repository_candidate(&mut self) {
         if let AppInteractionMode::RepositorySelection {
             selection,
             selected_candidate,
+            checked_candidate_paths,
         } = &self.mode
         {
             let Some(candidate) = selection.skills.get(*selected_candidate) else {
                 return;
             };
+            let selected_skill_paths = if checked_candidate_paths.is_empty() {
+                vec![candidate.relative_path.clone()]
+            } else {
+                selection
+                    .skills
+                    .iter()
+                    .filter(|candidate| checked_candidate_paths.contains(&candidate.relative_path))
+                    .map(|candidate| candidate.relative_path.clone())
+                    .collect()
+            };
             self.pending_request = Some(AppOperationRequest::RepositoryImport {
                 repository: selection.repository.clone(),
-                selected_skill_path: Some(candidate.relative_path.clone()),
+                selected_skill_paths,
             });
         }
     }
@@ -429,7 +469,7 @@ impl AppState {
                     },
                     AppImportSource::Repository => AppOperationRequest::RepositoryImport {
                         repository: self.prompt_text.clone(),
-                        selected_skill_path: None,
+                        selected_skill_paths: Vec::new(),
                     },
                 };
                 self.pending_request = Some(request);

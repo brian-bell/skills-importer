@@ -51,14 +51,18 @@ fn repository_selection_render_shows_candidates_and_confirm_cancel_hints() {
             ],
         },
     ));
+    state.reduce(AppAction::ToggleRepositoryCandidate);
 
     let text = render_text(&state, 90, 20);
 
     for expected in [
         "Repository selection",
+        "> [x] repo-alpha",
+        "  [ ] repo-beta",
         "repo-alpha",
         "skills/repo-alpha",
         "repo-beta",
+        "space select",
         "enter import",
         "esc cancel",
     ] {

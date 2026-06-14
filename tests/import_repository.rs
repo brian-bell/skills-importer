@@ -22,7 +22,7 @@ fn repository_with_multiple_valid_skills_returns_selection_without_importing() {
         &roots,
         ImportRepositoryRequest {
             repository: "https://example.test/skills.git",
-            selected_skill_path: None,
+            selected_skill_paths: &[],
         },
         &provider,
     )
@@ -41,6 +41,9 @@ fn repository_with_multiple_valid_skills_returns_selection_without_importing() {
         }
         RepositoryImportResult::Imported(import) => {
             panic!("expected selection, imported {}", import.skill_name)
+        }
+        RepositoryImportResult::ImportedBatch { imports } => {
+            panic!("expected selection, imported {} skills", imports.len())
         }
     }
     assert!(
@@ -63,7 +66,7 @@ fn repository_with_one_valid_skill_imports_directly() {
         &roots,
         ImportRepositoryRequest {
             repository: "https://example.test/solo.git",
-            selected_skill_path: None,
+            selected_skill_paths: &[],
         },
         &provider,
     )
@@ -73,6 +76,9 @@ fn repository_with_one_valid_skill_imports_directly() {
         RepositoryImportResult::Imported(import) => import,
         RepositoryImportResult::Selection(selection) => {
             panic!("expected import, got {} choices", selection.skills.len())
+        }
+        RepositoryImportResult::ImportedBatch { imports } => {
+            panic!("expected single import, got {} imports", imports.len())
         }
     };
     assert_eq!(import.skill_name, "solo-repo-skill");
@@ -125,7 +131,7 @@ description: Root repository skill.
         &roots,
         ImportRepositoryRequest {
             repository: "https://example.test/root.git",
-            selected_skill_path: None,
+            selected_skill_paths: &[],
         },
         &provider,
     )
@@ -135,6 +141,9 @@ description: Root repository skill.
         RepositoryImportResult::Imported(import) => import,
         RepositoryImportResult::Selection(selection) => {
             panic!("expected import, got {} choices", selection.skills.len())
+        }
+        RepositoryImportResult::ImportedBatch { imports } => {
+            panic!("expected single import, got {} imports", imports.len())
         }
     };
     assert_eq!(import.skill_name, "root-repo-skill");
@@ -176,7 +185,7 @@ fn selected_repository_skill_import_preserves_supporting_files() {
         &roots,
         ImportRepositoryRequest {
             repository: "https://example.test/many.git",
-            selected_skill_path: Some("repo-beta"),
+            selected_skill_paths: &["repo-beta"],
         },
         &provider,
     )
@@ -186,6 +195,9 @@ fn selected_repository_skill_import_preserves_supporting_files() {
         RepositoryImportResult::Imported(import) => import,
         RepositoryImportResult::Selection(selection) => {
             panic!("expected import, got {} choices", selection.skills.len())
+        }
+        RepositoryImportResult::ImportedBatch { imports } => {
+            panic!("expected single import, got {} imports", imports.len())
         }
     };
     assert_eq!(import.skill_name, "repo-beta");
@@ -200,6 +212,68 @@ fn selected_repository_skill_import_preserves_supporting_files() {
         )
         .expect("stored support file"),
         "repository support\n"
+    );
+}
+
+#[test]
+fn selected_repository_skills_import_as_batch_in_scan_order() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = roots(temp.path());
+    let repository = temp.path().join("repo");
+    let beta = write_skill(&repository, "repo-beta", "Second repository skill.");
+    let alpha = write_skill(&repository, "repo-alpha", "First repository skill.");
+    fs::create_dir_all(alpha.join("references")).expect("alpha support dir");
+    fs::write(alpha.join("references").join("notes.md"), "alpha support\n")
+        .expect("alpha support file");
+    fs::write(beta.join("beta.txt"), "beta support\n").expect("beta support file");
+    let provider = StaticRepositoryProvider {
+        repository_path: repository,
+    };
+
+    let result = import_repository_skill(
+        &roots,
+        ImportRepositoryRequest {
+            repository: "https://example.test/many.git",
+            selected_skill_paths: &["repo-beta", "repo-alpha"],
+        },
+        &provider,
+    )
+    .expect("selected repository batch import succeeds");
+
+    let imports = match result {
+        RepositoryImportResult::ImportedBatch { imports } => imports,
+        result => panic!("expected imported batch, got {result:?}"),
+    };
+    assert_eq!(
+        imports
+            .iter()
+            .map(|import| import.skill_name.as_str())
+            .collect::<Vec<_>>(),
+        ["repo-alpha", "repo-beta"]
+    );
+    assert_eq!(
+        imports[0].manifest.source_location.as_deref(),
+        Some("https://example.test/many.git#repo-alpha")
+    );
+    assert_eq!(
+        imports[1].manifest.source_location.as_deref(),
+        Some("https://example.test/many.git#repo-beta")
+    );
+    assert_eq!(
+        fs::read_to_string(
+            roots
+                .imports_root
+                .join("repo-alpha")
+                .join("references")
+                .join("notes.md")
+        )
+        .expect("stored alpha support file"),
+        "alpha support\n"
+    );
+    assert_eq!(
+        fs::read_to_string(roots.imports_root.join("repo-beta").join("beta.txt"))
+            .expect("stored beta support file"),
+        "beta support\n"
     );
 }
 
@@ -227,7 +301,7 @@ fn selected_repository_skill_uses_relative_path_when_names_duplicate() {
         &roots,
         ImportRepositoryRequest {
             repository: "https://example.test/duplicates.git",
-            selected_skill_path: Some("./second"),
+            selected_skill_paths: &["./second"],
         },
         &provider,
     )
@@ -238,12 +312,163 @@ fn selected_repository_skill_uses_relative_path_when_names_duplicate() {
         RepositoryImportResult::Selection(selection) => {
             panic!("expected import, got {} choices", selection.skills.len())
         }
+        RepositoryImportResult::ImportedBatch { imports } => {
+            panic!("expected single import, got {} imports", imports.len())
+        }
     };
     assert_eq!(import.skill_name, "duplicate-name");
     assert_eq!(
         fs::read_to_string(roots.imports_root.join("duplicate-name").join("chosen.txt"))
             .expect("stored selected file"),
         "selected\n"
+    );
+}
+
+#[test]
+fn selected_repository_batch_with_missing_path_writes_nothing() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = roots(temp.path());
+    let repository = temp.path().join("repo");
+    write_skill(&repository, "repo-alpha", "First repository skill.");
+    write_skill(&repository, "repo-beta", "Second repository skill.");
+    let provider = StaticRepositoryProvider {
+        repository_path: repository.clone(),
+    };
+
+    let error = import_repository_skill(
+        &roots,
+        ImportRepositoryRequest {
+            repository: "https://example.test/many.git",
+            selected_skill_paths: &["repo-alpha", "missing-skill"],
+        },
+        &provider,
+    )
+    .expect_err("selected repository batch import fails");
+
+    match error {
+        ImportError::InvalidSource { path, message } => {
+            assert_eq!(path, repository);
+            assert!(
+                message.contains("does not match any skill"),
+                "message should explain the missing selection: {message}"
+            );
+        }
+        error => panic!("unexpected error: {error}"),
+    }
+    assert!(
+        !roots.imports_root.exists(),
+        "missing batch selection should not create import storage"
+    );
+}
+
+#[test]
+fn selected_repository_batch_rejects_normalized_duplicate_paths() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = roots(temp.path());
+    let repository = temp.path().join("repo");
+    write_skill(&repository, "repo-alpha", "First repository skill.");
+    let provider = StaticRepositoryProvider {
+        repository_path: repository.clone(),
+    };
+
+    let error = import_repository_skill(
+        &roots,
+        ImportRepositoryRequest {
+            repository: "https://example.test/many.git",
+            selected_skill_paths: &["repo-alpha", "./repo-alpha"],
+        },
+        &provider,
+    )
+    .expect_err("selected repository batch import fails");
+
+    match error {
+        ImportError::InvalidSource { path, message } => {
+            assert_eq!(path, repository);
+            assert!(
+                message.contains("duplicate repository skill selection"),
+                "message should explain duplicate selection: {message}"
+            );
+        }
+        error => panic!("unexpected error: {error}"),
+    }
+    assert!(
+        !roots.imports_root.exists(),
+        "duplicate batch selection should not create import storage"
+    );
+}
+
+#[test]
+fn selected_repository_batch_rejects_duplicate_skill_names_before_writing() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = roots(temp.path());
+    let repository = temp.path().join("repo");
+    write_skill_with_frontmatter_name(
+        &repository.join("first"),
+        "duplicate-name",
+        "First duplicate skill.",
+    );
+    write_skill_with_frontmatter_name(
+        &repository.join("second"),
+        "duplicate-name",
+        "Second duplicate skill.",
+    );
+    let provider = StaticRepositoryProvider {
+        repository_path: repository,
+    };
+
+    let error = import_repository_skill(
+        &roots,
+        ImportRepositoryRequest {
+            repository: "https://example.test/duplicates.git",
+            selected_skill_paths: &["first", "second"],
+        },
+        &provider,
+    )
+    .expect_err("duplicate skill names fail");
+
+    match error {
+        ImportError::Collision { name, .. } => assert_eq!(name, "duplicate-name"),
+        error => panic!("unexpected error: {error}"),
+    }
+    assert!(
+        !roots.imports_root.exists(),
+        "duplicate skill names should not create import storage"
+    );
+}
+
+#[test]
+fn selected_repository_batch_rejects_existing_skill_collision_before_writing() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = roots(temp.path());
+    let repository = temp.path().join("repo");
+    write_skill(&repository, "repo-alpha", "First repository skill.");
+    write_skill(&repository, "repo-beta", "Second repository skill.");
+    write_skill(
+        &roots.canonical_root,
+        "repo-beta",
+        "Existing canonical skill.",
+    );
+    let provider = StaticRepositoryProvider {
+        repository_path: repository,
+    };
+
+    let error = import_repository_skill(
+        &roots,
+        ImportRepositoryRequest {
+            repository: "https://example.test/many.git",
+            selected_skill_paths: &["repo-alpha", "repo-beta"],
+        },
+        &provider,
+    )
+    .expect_err("existing skill collision fails");
+
+    match error {
+        ImportError::Collision { name, .. } => assert_eq!(name, "repo-beta"),
+        error => panic!("unexpected error: {error}"),
+    }
+    assert!(
+        !roots.imports_root.join("repo-alpha").exists(),
+        "collision should happen before writing any selected skill"
     );
 }
 
@@ -262,7 +487,7 @@ fn selected_repository_skill_path_that_does_not_exist_returns_clear_error() {
         &roots,
         ImportRepositoryRequest {
             repository: "https://example.test/many.git",
-            selected_skill_path: Some("missing-skill"),
+            selected_skill_paths: &["missing-skill"],
         },
         &provider,
     )
@@ -285,6 +510,34 @@ fn selected_repository_skill_path_that_does_not_exist_returns_clear_error() {
 }
 
 #[test]
+fn repository_batch_import_json_uses_stable_snake_case_kind() {
+    let result = RepositoryImportResult::ImportedBatch {
+        imports: vec![skill_importer::ImportResult {
+            skill_name: "repo-alpha".to_string(),
+            skill_path: PathBuf::from("/tmp/imports/repo-alpha"),
+            manifest_path: PathBuf::from("/tmp/imports/repo-alpha/import.json"),
+            manifest: skill_importer::ImportManifest {
+                source_type: skill_importer::ImportSourceType::Repository,
+                source_location: Some("https://example.test/skills.git#repo-alpha".to_string()),
+                imported_at: 1,
+                content_hash: "sha256:abc".to_string(),
+                promoted: false,
+            },
+            actions: Vec::new(),
+        }],
+    };
+
+    let json = serde_json::to_value(result).expect("batch json");
+
+    assert_eq!(json["kind"], "imported_batch");
+    assert_eq!(json["imports"][0]["skill_name"], "repo-alpha");
+    assert_eq!(
+        json["imports"][0]["manifest"]["source_location"],
+        "https://example.test/skills.git#repo-alpha"
+    );
+}
+
+#[test]
 fn repository_provider_fetch_failure_reports_repository_without_partial_storage() {
     let temp = tempfile::tempdir().expect("tempdir");
     let roots = roots(temp.path());
@@ -293,7 +546,7 @@ fn repository_provider_fetch_failure_reports_repository_without_partial_storage(
         &roots,
         ImportRepositoryRequest {
             repository: "https://example.test/unavailable.git",
-            selected_skill_path: None,
+            selected_skill_paths: &[],
         },
         &FailingRepositoryProvider,
     )
@@ -369,7 +622,7 @@ description: This should not be imported.
         &roots,
         ImportRepositoryRequest {
             repository: "https://example.test/broken-root.git",
-            selected_skill_path: None,
+            selected_skill_paths: &[],
         },
         &provider,
     )
@@ -402,7 +655,7 @@ fn repository_with_no_valid_skills_returns_clear_error_without_partial_storage()
         &roots,
         ImportRepositoryRequest {
             repository: "https://example.test/empty.git",
-            selected_skill_path: None,
+            selected_skill_paths: &[],
         },
         &provider,
     )
@@ -446,7 +699,7 @@ fn repository_scan_skips_skills_beyond_depth_limit() {
         &roots,
         ImportRepositoryRequest {
             repository: "https://example.test/deep.git",
-            selected_skill_path: None,
+            selected_skill_paths: &[],
         },
         &provider,
     )
