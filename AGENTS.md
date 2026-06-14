@@ -7,7 +7,11 @@ inspecting and managing local AI skill catalogs.
 
 - `src/lib.rs` exposes `discover_skills`, `DiscoveryRoots`, and filesystem-safe
   skill operations.
-- `src/main.rs` contains the JSON command interface and CLI/TUI root handling.
+- `src/workflow.rs` owns operation dispatch over resolved `DiscoveryRoots`.
+- `src/json_adapter.rs` renders workflow outcomes to stable JSON automation
+  output.
+- `src/main.rs` contains command parsing, CLI/TUI root handling, and runtime
+  adapter wiring.
 - `src/tui/` contains reducer-friendly app state, key mapping, ratatui
   rendering, and the crossterm terminal loop.
 - `tests/` covers discovery, imports, enable/disable, promote/delete, JSON
@@ -57,8 +61,8 @@ sibling skills catalog at `../skills/catalog/portable`; override
 - JSON commands expose Markdown, path, and URL imports; repository import is
   exposed through the core library and TUI.
 - Enable/disable, promote, and delete operations keep filesystem safety checks
-  in core operation code. TUI code should dispatch operation requests rather
-  than reimplementing those checks.
+  in core operation code. CLI and TUI code should translate requests into the
+  workflow module rather than reimplementing dispatch or JSON result mapping.
 
 ## Conventions
 

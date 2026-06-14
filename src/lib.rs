@@ -13,7 +13,9 @@ use std::os::unix::ffi::OsStrExt;
 #[cfg(windows)]
 use std::os::windows::ffi::OsStrExt;
 
+pub mod json_adapter;
 pub mod tui;
+pub mod workflow;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiscoveryRoots {

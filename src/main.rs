@@ -6,12 +6,10 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use skill_importer::{
-    DeleteImportRequest, DisableSkillRequest, DiscoveryRoots, EnableSkillRequest,
-    ImportLocalPathRequest, ImportMarkdownRequest, ImportUrlRequest, PromoteSkillRequest,
-    SkillAgent, SkillOperationResult, SkillUrlFetchError, SkillUrlFetcher,
-    delete_unpromoted_import, disable_skill, discover_skills, enable_skill,
-    import_local_path_skill, import_markdown_skill, import_url_skill, inventory_to_json,
-    promote_imported_skill, tui::run_tui,
+    DeleteImportRequest, DiscoveryRoots, ImportLocalPathRequest, ImportMarkdownRequest,
+    ImportUrlRequest, PromoteSkillRequest, SkillAgent, SkillRepositoryCheckout,
+    SkillRepositoryFetchError, SkillRepositoryProvider, SkillUrlFetchError, SkillUrlFetcher,
+    json_adapter, tui::run_tui, workflow,
 };
 
 const MAX_SKILL_MARKDOWN_BYTES: u64 = 1024 * 1024;
@@ -46,16 +44,18 @@ fn run_with_services(
     tui_runner: &impl TuiRunner,
 ) -> Result<(), String> {
     let command = Command::parse(args)?;
+    let repository_provider = UnavailableRepositoryProvider;
 
     match command {
         Command::List { roots } => {
-            let inventory = discover_skills(&roots)
-                .map_err(|error| format!("failed to discover skills: {error}"))?;
-            let json = inventory_to_json(&inventory);
-            serde_json::to_writer_pretty(&mut stdout, &json)
-                .map_err(|error| format!("failed to write JSON: {error}"))?;
-            writeln!(stdout).map_err(|error| format!("failed to write JSON: {error}"))?;
-            Ok(())
+            let outcome = workflow::execute(
+                &roots,
+                workflow::OperationRequest::List,
+                url_fetcher,
+                &repository_provider,
+            )
+            .map_err(|error| format!("failed to discover skills: {error}"))?;
+            write_json_outcome(&mut stdout, &outcome)
         }
         Command::ImportMarkdown {
             roots,
@@ -65,90 +65,97 @@ fn run_with_services(
             io::stdin()
                 .read_to_string(&mut markdown)
                 .map_err(|error| format!("failed to read Markdown from stdin: {error}"))?;
-            let import = import_markdown_skill(
+            let outcome = workflow::execute(
                 &roots,
-                ImportMarkdownRequest {
+                workflow::OperationRequest::ImportMarkdown(ImportMarkdownRequest {
                     markdown: &markdown,
                     source_location: source_location.as_deref(),
-                },
+                }),
+                url_fetcher,
+                &repository_provider,
             )
             .map_err(|error| format!("failed to import Markdown: {error}"))?;
-            serde_json::to_writer_pretty(&mut stdout, &import)
-                .map_err(|error| format!("failed to write JSON: {error}"))?;
-            writeln!(stdout).map_err(|error| format!("failed to write JSON: {error}"))?;
-            Ok(())
+            write_json_outcome(&mut stdout, &outcome)
         }
         Command::ImportPath { roots, path } => {
-            let import = import_local_path_skill(
+            let outcome = workflow::execute(
                 &roots,
-                ImportLocalPathRequest {
+                workflow::OperationRequest::ImportLocalPath(ImportLocalPathRequest {
                     path: path.as_path(),
-                },
+                }),
+                url_fetcher,
+                &repository_provider,
             )
             .map_err(|error| format!("failed to import path: {error}"))?;
-            serde_json::to_writer_pretty(&mut stdout, &import)
-                .map_err(|error| format!("failed to write JSON: {error}"))?;
-            writeln!(stdout).map_err(|error| format!("failed to write JSON: {error}"))?;
-            Ok(())
+            write_json_outcome(&mut stdout, &outcome)
         }
         Command::ImportUrl { roots, url } => {
-            let import =
-                import_url_skill(&roots, ImportUrlRequest { url: url.as_str() }, url_fetcher)
-                    .map_err(|error| format!("failed to import URL: {error}"))?;
-            serde_json::to_writer_pretty(&mut stdout, &import)
-                .map_err(|error| format!("failed to write JSON: {error}"))?;
-            writeln!(stdout).map_err(|error| format!("failed to write JSON: {error}"))?;
-            Ok(())
+            let outcome = workflow::execute(
+                &roots,
+                workflow::OperationRequest::ImportUrl(ImportUrlRequest { url: url.as_str() }),
+                url_fetcher,
+                &repository_provider,
+            )
+            .map_err(|error| format!("failed to import URL: {error}"))?;
+            write_json_outcome(&mut stdout, &outcome)
         }
         Command::Enable {
             roots,
             skill_name,
             agents,
         } => {
-            let result = enable_skill(
+            let outcome = workflow::execute(
                 &roots,
-                EnableSkillRequest {
+                workflow::OperationRequest::Enable {
                     skill_name: skill_name.as_str(),
                     agents: &agents,
                 },
+                url_fetcher,
+                &repository_provider,
             )
-            .map_err(|failure| format!("failed to enable skill: {}", failure.error))?;
-            write_operation_json(&mut stdout, &result)
+            .map_err(|error| format!("failed to enable skill: {error}"))?;
+            write_json_outcome(&mut stdout, &outcome)
         }
         Command::Disable {
             roots,
             skill_name,
             agents,
         } => {
-            let result = disable_skill(
+            let outcome = workflow::execute(
                 &roots,
-                DisableSkillRequest {
+                workflow::OperationRequest::Disable {
                     skill_name: skill_name.as_str(),
                     agents: &agents,
                 },
+                url_fetcher,
+                &repository_provider,
             )
-            .map_err(|failure| format!("failed to disable skill: {}", failure.error))?;
-            write_operation_json(&mut stdout, &result)
+            .map_err(|error| format!("failed to disable skill: {error}"))?;
+            write_json_outcome(&mut stdout, &outcome)
         }
         Command::Promote { roots, skill_name } => {
-            let result = promote_imported_skill(
+            let outcome = workflow::execute(
                 &roots,
-                PromoteSkillRequest {
+                workflow::OperationRequest::Promote(PromoteSkillRequest {
                     skill_name: skill_name.as_str(),
-                },
+                }),
+                url_fetcher,
+                &repository_provider,
             )
-            .map_err(|failure| format!("failed to promote skill: {}", failure.error))?;
-            write_operation_json(&mut stdout, &result)
+            .map_err(|error| format!("failed to promote skill: {error}"))?;
+            write_json_outcome(&mut stdout, &outcome)
         }
         Command::Delete { roots, skill_name } => {
-            let result = delete_unpromoted_import(
+            let outcome = workflow::execute(
                 &roots,
-                DeleteImportRequest {
+                workflow::OperationRequest::Delete(DeleteImportRequest {
                     skill_name: skill_name.as_str(),
-                },
+                }),
+                url_fetcher,
+                &repository_provider,
             )
-            .map_err(|failure| format!("failed to delete import: {}", failure.error))?;
-            write_operation_json(&mut stdout, &result)
+            .map_err(|error| format!("failed to delete import: {error}"))?;
+            write_json_outcome(&mut stdout, &outcome)
         }
         Command::Tui { roots } => tui_runner.run(&roots),
     }
@@ -635,14 +642,12 @@ fn parse_tui_command(mut args: impl Iterator<Item = OsString>) -> Result<Command
     })
 }
 
-fn write_operation_json(
+fn write_json_outcome(
     stdout: &mut impl Write,
-    result: &SkillOperationResult,
+    outcome: &workflow::OperationOutcome,
 ) -> Result<(), String> {
-    serde_json::to_writer_pretty(&mut *stdout, result)
-        .map_err(|error| format!("failed to write JSON: {error}"))?;
-    writeln!(stdout).map_err(|error| format!("failed to write JSON: {error}"))?;
-    Ok(())
+    json_adapter::write_outcome(stdout, outcome)
+        .map_err(|error| format!("failed to write JSON: {error}"))
 }
 
 impl RootArgs {
@@ -730,6 +735,29 @@ impl SkillUrlFetcher for UreqUrlFetcher {
                 message: error.to_string(),
             })?;
         read_limited_skill_markdown(response.into_body().into_reader())
+    }
+}
+
+struct UnavailableRepositoryProvider;
+
+impl SkillRepositoryProvider for UnavailableRepositoryProvider {
+    type Checkout = UnavailableRepositoryCheckout;
+
+    fn fetch_repository(
+        &self,
+        repository: &str,
+    ) -> Result<Self::Checkout, SkillRepositoryFetchError> {
+        Err(SkillRepositoryFetchError {
+            message: format!("repository import is not available for `{repository}`"),
+        })
+    }
+}
+
+struct UnavailableRepositoryCheckout;
+
+impl SkillRepositoryCheckout for UnavailableRepositoryCheckout {
+    fn path(&self) -> &Path {
+        Path::new("")
     }
 }
 

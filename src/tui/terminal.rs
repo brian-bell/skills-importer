@@ -11,12 +11,9 @@ use ratatui::{
 };
 
 use crate::{
-    DeleteImportRequest, DisableSkillRequest, DiscoveryRoots, EnableSkillRequest,
-    ImportLocalPathRequest, ImportMarkdownRequest, ImportRepositoryRequest, ImportUrlRequest,
-    PromoteSkillRequest, RepositoryImportResult, SkillRepositoryCheckout,
-    SkillRepositoryFetchError, SkillRepositoryProvider, SkillUrlFetcher, delete_unpromoted_import,
-    disable_skill, discover_skills, enable_skill, import_local_path_skill, import_markdown_skill,
-    import_repository_skill, import_url_skill, promote_imported_skill,
+    DeleteImportRequest, DiscoveryRoots, ImportLocalPathRequest, ImportMarkdownRequest,
+    ImportRepositoryRequest, ImportUrlRequest, PromoteSkillRequest, SkillRepositoryCheckout,
+    SkillRepositoryFetchError, SkillRepositoryProvider, SkillUrlFetcher, discover_skills, workflow,
 };
 
 use super::{
@@ -150,113 +147,130 @@ fn execute_operation_request(
     request: AppOperationRequest,
 ) -> Result<TerminalOperationOutcome, String> {
     match request {
-        AppOperationRequest::EnableSkill { skill_name, agent } => enable_skill(
+        AppOperationRequest::EnableSkill { skill_name, agent } => {
+            let agents = [agent];
+            execute_workflow_request(
+                roots,
+                url_fetcher,
+                repository_provider,
+                "enable",
+                workflow::OperationRequest::Enable {
+                    skill_name: &skill_name,
+                    agents: &agents,
+                },
+            )
+        }
+        AppOperationRequest::DisableSkill { skill_name, agent } => {
+            let agents = [agent];
+            execute_workflow_request(
+                roots,
+                url_fetcher,
+                repository_provider,
+                "disable",
+                workflow::OperationRequest::Disable {
+                    skill_name: &skill_name,
+                    agents: &agents,
+                },
+            )
+        }
+        AppOperationRequest::PromoteSkill { skill_name } => execute_workflow_request(
             roots,
-            EnableSkillRequest {
+            url_fetcher,
+            repository_provider,
+            "promote",
+            workflow::OperationRequest::Promote(PromoteSkillRequest {
                 skill_name: &skill_name,
-                agents: &[agent],
-            },
-        )
-        .map(|result| {
-            TerminalOperationOutcome::Completed(AppOperationResult::from_skill_operation(
-                "enable", &result,
-            ))
-        })
-        .map_err(|failure| failure.error.to_string()),
-        AppOperationRequest::DisableSkill { skill_name, agent } => disable_skill(
+            }),
+        ),
+        AppOperationRequest::DeleteImport { skill_name } => execute_workflow_request(
             roots,
-            DisableSkillRequest {
+            url_fetcher,
+            repository_provider,
+            "delete",
+            workflow::OperationRequest::Delete(DeleteImportRequest {
                 skill_name: &skill_name,
-                agents: &[agent],
-            },
-        )
-        .map(|result| {
-            TerminalOperationOutcome::Completed(AppOperationResult::from_skill_operation(
-                "disable", &result,
-            ))
-        })
-        .map_err(|failure| failure.error.to_string()),
-        AppOperationRequest::PromoteSkill { skill_name } => promote_imported_skill(
+            }),
+        ),
+        AppOperationRequest::ImportMarkdown { markdown } => execute_workflow_request(
             roots,
-            PromoteSkillRequest {
-                skill_name: &skill_name,
-            },
-        )
-        .map(|result| {
-            TerminalOperationOutcome::Completed(AppOperationResult::from_skill_operation(
-                "promote", &result,
-            ))
-        })
-        .map_err(|failure| failure.error.to_string()),
-        AppOperationRequest::DeleteImport { skill_name } => delete_unpromoted_import(
-            roots,
-            DeleteImportRequest {
-                skill_name: &skill_name,
-            },
-        )
-        .map(|result| {
-            TerminalOperationOutcome::Completed(AppOperationResult::from_skill_operation(
-                "delete", &result,
-            ))
-        })
-        .map_err(|failure| failure.error.to_string()),
-        AppOperationRequest::ImportMarkdown { markdown } => import_markdown_skill(
-            roots,
-            ImportMarkdownRequest {
+            url_fetcher,
+            repository_provider,
+            "import markdown",
+            workflow::OperationRequest::ImportMarkdown(ImportMarkdownRequest {
                 markdown: &markdown,
                 source_location: Some("tui"),
-            },
-        )
-        .map(|import| {
-            TerminalOperationOutcome::Completed(AppOperationResult::from_import(
-                "import markdown",
-                &import,
-            ))
-        })
-        .map_err(|error| error.to_string()),
-        AppOperationRequest::ImportPath { path } => import_local_path_skill(
+            }),
+        ),
+        AppOperationRequest::ImportPath { path } => execute_workflow_request(
             roots,
-            ImportLocalPathRequest {
+            url_fetcher,
+            repository_provider,
+            "import path",
+            workflow::OperationRequest::ImportLocalPath(ImportLocalPathRequest {
                 path: path.as_path(),
-            },
-        )
-        .map(|import| {
-            TerminalOperationOutcome::Completed(AppOperationResult::from_import(
-                "import path",
-                &import,
-            ))
-        })
-        .map_err(|error| error.to_string()),
-        AppOperationRequest::ImportUrl { url } => {
-            import_url_skill(roots, ImportUrlRequest { url: &url }, url_fetcher)
-                .map(|import| {
-                    TerminalOperationOutcome::Completed(AppOperationResult::from_import(
-                        "import url",
-                        &import,
-                    ))
-                })
-                .map_err(|error| error.to_string())
-        }
+            }),
+        ),
+        AppOperationRequest::ImportUrl { url } => execute_workflow_request(
+            roots,
+            url_fetcher,
+            repository_provider,
+            "import url",
+            workflow::OperationRequest::ImportUrl(ImportUrlRequest { url: &url }),
+        ),
         AppOperationRequest::RepositoryImport {
             repository,
             selected_skill_path,
-        } => import_repository_skill(
+        } => execute_workflow_request(
             roots,
-            ImportRepositoryRequest {
+            url_fetcher,
+            repository_provider,
+            "repository import",
+            workflow::OperationRequest::ImportRepository(ImportRepositoryRequest {
                 repository: &repository,
                 selected_skill_path: selected_skill_path.as_deref(),
-            },
-            repository_provider,
-        )
-        .map(|result| match result {
-            RepositoryImportResult::Imported(import) => TerminalOperationOutcome::Completed(
-                AppOperationResult::from_import("repository import", &import),
-            ),
-            RepositoryImportResult::Selection(selection) => {
-                TerminalOperationOutcome::RepositorySelection(selection)
+            }),
+        ),
+    }
+}
+
+fn execute_workflow_request(
+    roots: &DiscoveryRoots,
+    url_fetcher: &impl SkillUrlFetcher,
+    repository_provider: &impl SkillRepositoryProvider,
+    operation: &'static str,
+    request: workflow::OperationRequest<'_>,
+) -> Result<TerminalOperationOutcome, String> {
+    let outcome = workflow::execute(roots, request, url_fetcher, repository_provider)
+        .map_err(|error| error.to_string())?;
+    terminal_outcome_from_workflow(operation, outcome)
+}
+
+fn terminal_outcome_from_workflow(
+    operation: &'static str,
+    outcome: workflow::OperationOutcome,
+) -> Result<TerminalOperationOutcome, String> {
+    match outcome {
+        workflow::OperationOutcome::Import(import) => Ok(TerminalOperationOutcome::Completed(
+            AppOperationResult::from_import(operation, &import),
+        )),
+        workflow::OperationOutcome::RepositoryImport(result) => match result {
+            crate::RepositoryImportResult::Imported(import) => {
+                Ok(TerminalOperationOutcome::Completed(
+                    AppOperationResult::from_import(operation, &import),
+                ))
             }
-        })
-        .map_err(|error| error.to_string()),
+            crate::RepositoryImportResult::Selection(selection) => {
+                Ok(TerminalOperationOutcome::RepositorySelection(selection))
+            }
+        },
+        workflow::OperationOutcome::SkillOperation(result) => {
+            Ok(TerminalOperationOutcome::Completed(
+                AppOperationResult::from_skill_operation(operation, &result),
+            ))
+        }
+        workflow::OperationOutcome::Inventory(_) => {
+            Err("workflow list outcome is not a terminal operation result".to_string())
+        }
     }
 }
 
