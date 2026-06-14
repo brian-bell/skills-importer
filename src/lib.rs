@@ -1889,6 +1889,8 @@ fn materialize_repository_imports(
     plans: Vec<RepositoryImportPlan>,
 ) -> Result<Vec<ImportResult>, ImportError> {
     let mut imports = Vec::with_capacity(plans.len());
+    let mut created_skill_paths = Vec::with_capacity(plans.len());
+    let mut created_import_roots = Vec::new();
     for plan in plans {
         let RepositoryImportPlan {
             metadata,
@@ -1898,18 +1900,35 @@ fn materialize_repository_imports(
             manifest_path,
         } = plan;
         if let Some(imports_root) = skill_path.parent() {
-            fs::create_dir_all(imports_root).map_err(ImportError::Io)?;
-        }
-        fs::create_dir(&skill_path).map_err(|error| {
-            if error.kind() == io::ErrorKind::AlreadyExists {
-                ImportError::Collision {
-                    name: metadata.name.clone(),
-                    path: skill_path.clone(),
-                }
-            } else {
-                ImportError::Io(error)
+            let imports_root_existed = imports_root.exists();
+            fs::create_dir_all(imports_root)
+                .map_err(ImportError::Io)
+                .inspect_err(|_| {
+                    rollback_repository_imports(&created_skill_paths, &created_import_roots);
+                })?;
+            if !imports_root_existed
+                && !created_import_roots
+                    .iter()
+                    .any(|created_root| created_root == imports_root)
+            {
+                created_import_roots.push(imports_root.to_path_buf());
             }
-        })?;
+        }
+        fs::create_dir(&skill_path)
+            .map_err(|error| {
+                if error.kind() == io::ErrorKind::AlreadyExists {
+                    ImportError::Collision {
+                        name: metadata.name.clone(),
+                        path: skill_path.clone(),
+                    }
+                } else {
+                    ImportError::Io(error)
+                }
+            })
+            .inspect_err(|_| {
+                rollback_repository_imports(&created_skill_paths, &created_import_roots);
+            })?;
+        created_skill_paths.push(skill_path.clone());
         let content_actions = match materialize_local_skill(
             &source_path,
             &skill_path,
@@ -1917,12 +1936,12 @@ fn materialize_repository_imports(
         ) {
             Ok(actions) => actions,
             Err(error) => {
-                let _ = fs::remove_dir_all(&skill_path);
+                rollback_repository_imports(&created_skill_paths, &created_import_roots);
                 return Err(error);
             }
         };
         if let Err(error) = write_import_manifest(&manifest_path, &manifest) {
-            let _ = fs::remove_dir_all(&skill_path);
+            rollback_repository_imports(&created_skill_paths, &created_import_roots);
             return Err(error);
         }
 
@@ -1936,6 +1955,15 @@ fn materialize_repository_imports(
     }
 
     Ok(imports)
+}
+
+fn rollback_repository_imports(created_skill_paths: &[PathBuf], created_import_roots: &[PathBuf]) {
+    for skill_path in created_skill_paths.iter().rev() {
+        let _ = fs::remove_dir_all(skill_path);
+    }
+    for imports_root in created_import_roots.iter().rev() {
+        let _ = fs::remove_dir(imports_root);
+    }
 }
 
 fn scan_repository_directory(

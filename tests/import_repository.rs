@@ -437,6 +437,47 @@ fn selected_repository_batch_rejects_duplicate_skill_names_before_writing() {
 }
 
 #[test]
+fn selected_repository_batch_rolls_back_created_storage_when_later_destination_fails() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = roots(temp.path());
+    let repository = temp.path().join("repo");
+    let oversized_skill_name = "x".repeat(300);
+    write_skill_with_frontmatter_name(
+        &repository.join("first"),
+        "repo-alpha",
+        "First repository skill.",
+    );
+    write_skill_with_frontmatter_name(
+        &repository.join("second"),
+        &oversized_skill_name,
+        "Second repository skill.",
+    );
+    let provider = StaticRepositoryProvider {
+        repository_path: repository,
+    };
+
+    let error = import_repository_skill(
+        &roots,
+        ImportRepositoryRequest {
+            repository: "https://example.test/many.git",
+            selected_skill_paths: &["first", "second"],
+        },
+        &provider,
+    )
+    .expect_err("oversized destination batch should fail");
+
+    assert!(matches!(error, ImportError::Io(_)));
+    assert!(
+        !roots.imports_root.join("repo-alpha").exists(),
+        "failed batch should roll back earlier created imports"
+    );
+    assert!(
+        !roots.imports_root.exists(),
+        "failed batch should roll back import storage it created"
+    );
+}
+
+#[test]
 fn selected_repository_batch_rejects_existing_skill_collision_before_writing() {
     let temp = tempfile::tempdir().expect("tempdir");
     let roots = roots(temp.path());

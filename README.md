@@ -95,6 +95,7 @@ m             import Markdown from prompt text
 f             import local path from prompt text
 u             import URL from prompt text
 g             import repository from prompt text
+space         toggle repository candidate selection
 enter         confirm prompt, confirmation, or repository candidate
 esc           cancel prompt or repository selection
 q             quit from the main screen
