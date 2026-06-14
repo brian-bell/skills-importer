@@ -30,6 +30,7 @@ make clippy
 make check
 make run-list
 make run-tui
+make make-run-prod
 ```
 
 The underlying commands are:
@@ -45,6 +46,11 @@ cargo clippy --all-targets -- -D warnings
 sibling skills catalog at `../skills/catalog/portable`; override
 `SKILLS_REPO`, `CANONICAL_ROOT`, `IMPORTS_ROOT`, `CLAUDE_CODE_ROOT`, or
 `CODEX_ROOT` when working elsewhere.
+
+`make make-run-prod` runs the TUI without disposable root overrides. It uses
+normal CLI defaults for canonical and imported skills, plus user-level agent
+roots at `~/.claude/skills` and `~/.agents/skills`, so enable/disable actions
+can mutate user-level skill symlinks.
 
 ## Behavior
 

@@ -1,7 +1,7 @@
 use std::fs;
 use std::os::unix::fs as unix_fs;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Output};
 
 use serde_json::Value;
 use skill_importer::{
@@ -281,6 +281,154 @@ fn enable_and_disable_commands_emit_action_json() {
 }
 
 #[test]
+fn enable_command_defaults_codex_root_to_user_level_skills_dir() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let catalog_repo = temp.path().join("skills-repo");
+    let home = temp.path().join("home");
+    let canonical_skill = write_catalog_skill(&catalog_repo, "global-helper");
+
+    let output = run_default_enable_command(&catalog_repo, &home, &["codex"]);
+
+    assert!(
+        output.status.success(),
+        "enable failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let user_codex_root = user_level_agent_root(&home, SkillAgent::Codex);
+    let link =
+        assert_user_level_symlink(&home, SkillAgent::Codex, "global-helper", &canonical_skill);
+
+    let json: Value = serde_json::from_slice(&output.stdout).expect("enable json");
+    assert_eq!(json["skill_name"], "global-helper");
+    assert_eq!(json["actions"][0]["action"], "create_directory");
+    assert_eq!(json["actions"][0]["agent"], "codex");
+    assert_eq!(
+        json["actions"][0]["path"].as_str(),
+        Some(user_codex_root.to_string_lossy().as_ref())
+    );
+    assert_eq!(json["actions"][1]["action"], "create_symlink");
+    assert_eq!(json["actions"][1]["agent"], "codex");
+    assert_eq!(
+        json["actions"][1]["path"].as_str(),
+        Some(link.to_string_lossy().as_ref())
+    );
+}
+
+#[test]
+fn enable_command_defaults_claude_code_root_to_user_level_skills_dir() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let catalog_repo = temp.path().join("skills-repo");
+    let home = temp.path().join("home");
+    let canonical_skill = write_catalog_skill(&catalog_repo, "global-helper");
+
+    let output = run_default_enable_command(&catalog_repo, &home, &["claude-code"]);
+
+    assert!(
+        output.status.success(),
+        "enable failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let user_claude_root = user_level_agent_root(&home, SkillAgent::ClaudeCode);
+    let link = assert_user_level_symlink(
+        &home,
+        SkillAgent::ClaudeCode,
+        "global-helper",
+        &canonical_skill,
+    );
+
+    let json: Value = serde_json::from_slice(&output.stdout).expect("enable json");
+    assert_eq!(json["skill_name"], "global-helper");
+    assert_eq!(json["actions"][0]["action"], "create_directory");
+    assert_eq!(json["actions"][0]["agent"], "claude_code");
+    assert_eq!(
+        json["actions"][0]["path"].as_str(),
+        Some(user_claude_root.to_string_lossy().as_ref())
+    );
+    assert_eq!(json["actions"][1]["action"], "create_symlink");
+    assert_eq!(json["actions"][1]["agent"], "claude_code");
+    assert_eq!(
+        json["actions"][1]["path"].as_str(),
+        Some(link.to_string_lossy().as_ref())
+    );
+}
+
+#[test]
+fn enable_command_defaults_both_agent_roots_to_user_level_skills_dirs() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let catalog_repo = temp.path().join("skills-repo");
+    let home = temp.path().join("home");
+    let canonical_skill = write_catalog_skill(&catalog_repo, "global-helper");
+
+    let output = run_default_enable_command(&catalog_repo, &home, &["claude-code", "codex"]);
+
+    assert!(
+        output.status.success(),
+        "enable failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let user_claude_link = assert_user_level_symlink(
+        &home,
+        SkillAgent::ClaudeCode,
+        "global-helper",
+        &canonical_skill,
+    );
+    let user_codex_link =
+        assert_user_level_symlink(&home, SkillAgent::Codex, "global-helper", &canonical_skill);
+
+    let json: Value = serde_json::from_slice(&output.stdout).expect("enable json");
+    let actions = json["actions"].as_array().expect("actions array");
+    assert!(
+        actions
+            .iter()
+            .any(|action| action["action"] == "create_symlink"
+                && action["agent"] == "claude_code"
+                && action["path"].as_str() == Some(user_claude_link.to_string_lossy().as_ref())),
+        "expected Claude Code create_symlink action: {actions:?}"
+    );
+    assert!(
+        actions
+            .iter()
+            .any(|action| action["action"] == "create_symlink"
+                && action["agent"] == "codex"
+                && action["path"].as_str() == Some(user_codex_link.to_string_lossy().as_ref())),
+        "expected Codex create_symlink action: {actions:?}"
+    );
+}
+
+#[test]
+fn enable_command_refuses_unsafe_entry_at_default_user_level_agent_root() {
+    for case in [
+        UnsafeEntry::Directory,
+        UnsafeEntry::File,
+        UnsafeEntry::ExternalSymlink,
+        UnsafeEntry::BrokenSymlink,
+        UnsafeEntry::WrongManagedSymlink,
+    ] {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let catalog_repo = temp.path().join("skills-repo");
+        let home = temp.path().join("home");
+        write_catalog_skill(&catalog_repo, "global-helper");
+        let unsafe_entry = user_level_agent_root(&home, SkillAgent::Codex).join("global-helper");
+        place_default_unsafe_entry(&catalog_repo, &home, case);
+
+        let output = run_default_enable_command(&catalog_repo, &home, &["codex"]);
+
+        assert!(!output.status.success(), "unsafe enable should fail");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("failed to enable skill"),
+            "stderr: {stderr}"
+        );
+        assert!(stderr.contains("unsafe agent entry"), "stderr: {stderr}");
+        assert!(
+            stderr.contains(unsafe_entry.to_string_lossy().as_ref()),
+            "stderr should name the unsafe entry: {stderr}"
+        );
+        assert_entry_still_exists(&unsafe_entry, case);
+    }
+}
+
+#[test]
 fn disable_command_reports_unsafe_agent_entries() {
     let temp = tempfile::tempdir().expect("tempdir");
     let roots = roots(temp.path());
@@ -368,6 +516,12 @@ description: Test skill.
     fs::canonicalize(skill_dir).expect("canonical skill dir")
 }
 
+fn write_catalog_skill(repo_root: &Path, name: &str) -> std::path::PathBuf {
+    fs::create_dir_all(repo_root).expect("catalog repo");
+    fs::write(repo_root.join("AGENTS.md"), "# Test catalog\n").expect("agents");
+    write_skill(&repo_root.join("catalog").join("portable"), name)
+}
+
 fn place_unsafe_entry(roots: &DiscoveryRoots, name: &str, case: UnsafeEntry) {
     fs::create_dir_all(&roots.claude_code_root).expect("claude root");
     let path = roots.claude_code_root.join(name);
@@ -392,6 +546,32 @@ fn place_unsafe_entry(roots: &DiscoveryRoots, name: &str, case: UnsafeEntry) {
     }
 }
 
+fn place_default_unsafe_entry(catalog_repo: &Path, home: &Path, case: UnsafeEntry) {
+    let codex_root = user_level_agent_root(home, SkillAgent::Codex);
+    fs::create_dir_all(&codex_root).expect("codex root");
+    let path = codex_root.join("global-helper");
+    match case {
+        UnsafeEntry::Directory => {
+            write_skill(&codex_root, "global-helper");
+        }
+        UnsafeEntry::File => {
+            fs::write(path, "mine").expect("regular file");
+        }
+        UnsafeEntry::ExternalSymlink => {
+            let external = write_skill(&catalog_repo.join("external-root"), "global-helper");
+            unix_fs::symlink(external, path).expect("external symlink");
+        }
+        UnsafeEntry::BrokenSymlink => {
+            unix_fs::symlink(codex_root.join("missing"), path).expect("broken symlink");
+        }
+        UnsafeEntry::WrongManagedSymlink => {
+            let imports_root = catalog_repo.join(".skill-importer").join("imports");
+            let other = write_skill(&imports_root, "other-helper");
+            unix_fs::symlink(other, path).expect("wrong managed symlink");
+        }
+    }
+}
+
 fn assert_unsafe_path(error: SkillOperationError, path: std::path::PathBuf) {
     match error {
         SkillOperationError::UnsafeAgentEntry { path: actual, .. } => assert_eq!(actual, path),
@@ -408,6 +588,45 @@ fn assert_entry_still_exists(path: &Path, case: UnsafeEntry) {
         | UnsafeEntry::BrokenSymlink
         | UnsafeEntry::WrongManagedSymlink => assert!(metadata.file_type().is_symlink()),
     }
+}
+
+fn run_default_enable_command(catalog_repo: &Path, home: &Path, agents: &[&str]) -> Output {
+    let mut command = skill_importer_command();
+    command.current_dir(catalog_repo).env("HOME", home).args([
+        "enable",
+        "--json",
+        "--skill",
+        "global-helper",
+    ]);
+    for agent in agents {
+        command.args(["--agent", agent]);
+    }
+    command.output().expect("run enable")
+}
+
+fn user_level_agent_root(home: &Path, agent: SkillAgent) -> std::path::PathBuf {
+    match agent {
+        SkillAgent::ClaudeCode => home.join(".claude").join("skills"),
+        SkillAgent::Codex => home.join(".agents").join("skills"),
+    }
+}
+
+fn assert_user_level_symlink(
+    home: &Path,
+    agent: SkillAgent,
+    skill_name: &str,
+    target: &Path,
+) -> std::path::PathBuf {
+    let link = user_level_agent_root(home, agent).join(skill_name);
+    assert_eq!(fs::canonicalize(&link).expect("link target"), target);
+    assert!(
+        fs::symlink_metadata(&link)
+            .expect("link metadata")
+            .file_type()
+            .is_symlink(),
+        "agent entry should be a symlink"
+    );
+    link
 }
 
 fn skill_importer_command() -> Command {
