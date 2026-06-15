@@ -17,6 +17,7 @@ pub struct AppState {
     selected_visible: Option<usize>,
     active_target: SkillAgent,
     filter: String,
+    source_filter: SourceFilter,
     latest_result: Option<AppOperationResult>,
     mode: AppInteractionMode,
     pending_request: Option<AppOperationRequest>,
@@ -76,6 +77,12 @@ pub struct StatusView {
     pub success: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceFilter {
+    All,
+    Imported,
+}
+
 const DEFAULT_ACTIVE_TARGET: SkillAgent = SkillAgent::Codex;
 
 impl AppState {
@@ -88,6 +95,7 @@ impl AppState {
             // Codex skill workflows; the target remains explicit and switchable.
             active_target: DEFAULT_ACTIVE_TARGET,
             filter: String::new(),
+            source_filter: SourceFilter::All,
             latest_result: None,
             mode: AppInteractionMode::Main,
             pending_request: None,
@@ -110,6 +118,10 @@ impl AppState {
             }
             AppAction::DeleteFilterChar => {
                 self.filter.pop();
+                self.recompute_visible();
+            }
+            AppAction::ToggleSourceFilter => {
+                self.source_filter = self.source_filter.toggled();
                 self.recompute_visible();
             }
             AppAction::MoveSelection(delta) => self.move_selection(delta),
@@ -235,6 +247,10 @@ impl AppState {
                 "j/k move".to_string(),
                 format!("e enable {}", agent_label(self.active_target)),
                 format!("d disable {}", agent_label(self.active_target)),
+                format!(
+                    "i toggle source: {}",
+                    source_filter_label(self.source_filter)
+                ),
                 "c Claude".to_string(),
                 "x Codex".to_string(),
                 "p promote".to_string(),
@@ -288,6 +304,10 @@ impl AppState {
         &self.filter
     }
 
+    pub fn source_filter(&self) -> SourceFilter {
+        self.source_filter
+    }
+
     pub fn latest_result(&self) -> Option<&AppOperationResult> {
         self.latest_result.as_ref()
     }
@@ -313,8 +333,9 @@ impl AppState {
     }
 
     pub fn update_inventory(&mut self, inventory: SkillInventory) {
+        let previous_selected_name = self.selected_skill().map(|skill| skill.name.clone());
         self.inventory = inventory;
-        self.recompute_visible();
+        self.recompute_visible_preserving(previous_selected_name);
         self.needs_refresh = false;
     }
 
@@ -324,13 +345,19 @@ impl AppState {
 
     fn recompute_visible(&mut self) {
         let previous_selected_name = self.selected_skill().map(|skill| skill.name.clone());
+        self.recompute_visible_preserving(previous_selected_name);
+    }
+
+    fn recompute_visible_preserving(&mut self, previous_selected_name: Option<String>) {
         self.visible_indices = self
             .inventory
             .skills
             .iter()
             .enumerate()
             .filter_map(|(index, skill)| {
-                if skill_matches_filter(skill, &self.filter) {
+                if skill_matches_filter(skill, &self.filter)
+                    && skill_matches_source_filter(skill, self.source_filter)
+                {
                     Some(index)
                 } else {
                     None
@@ -499,6 +526,15 @@ impl AppState {
     }
 }
 
+impl SourceFilter {
+    fn toggled(self) -> Self {
+        match self {
+            SourceFilter::All => SourceFilter::Imported,
+            SourceFilter::Imported => SourceFilter::All,
+        }
+    }
+}
+
 fn failure_context(
     request: Option<&AppOperationRequest>,
     mode: &AppInteractionMode,
@@ -541,11 +577,25 @@ fn skill_matches_filter(skill: &SkillEntry, filter: &str) -> bool {
             .contains(&filter)
 }
 
+fn skill_matches_source_filter(skill: &SkillEntry, source_filter: SourceFilter) -> bool {
+    match source_filter {
+        SourceFilter::All => true,
+        SourceFilter::Imported => skill.source == SkillSource::Imported,
+    }
+}
+
 pub fn source_label(source: SkillSource) -> &'static str {
     match source {
         SkillSource::Canonical => "canonical",
         SkillSource::Imported => "imported",
         SkillSource::AgentOnly => "agent only",
+    }
+}
+
+pub fn source_filter_label(source_filter: SourceFilter) -> &'static str {
+    match source_filter {
+        SourceFilter::All => "all",
+        SourceFilter::Imported => "imported",
     }
 }
 
