@@ -219,17 +219,23 @@ fn execute_operation_request(
         ),
         AppOperationRequest::RepositoryImport {
             repository,
-            selected_skill_path,
-        } => execute_workflow_request(
-            roots,
-            url_fetcher,
-            repository_provider,
-            "repository import",
-            workflow::OperationRequest::ImportRepository(ImportRepositoryRequest {
-                repository: &repository,
-                selected_skill_path: selected_skill_path.as_deref(),
-            }),
-        ),
+            selected_skill_paths,
+        } => {
+            let selected_skill_paths = selected_skill_paths
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            execute_workflow_request(
+                roots,
+                url_fetcher,
+                repository_provider,
+                "repository import",
+                workflow::OperationRequest::ImportRepository(ImportRepositoryRequest {
+                    repository: &repository,
+                    selected_skill_paths: &selected_skill_paths,
+                }),
+            )
+        }
     }
 }
 
@@ -257,6 +263,19 @@ fn terminal_outcome_from_workflow(
             crate::RepositoryImportResult::Imported(import) => {
                 Ok(TerminalOperationOutcome::Completed(
                     AppOperationResult::from_import(operation, &import),
+                ))
+            }
+            crate::RepositoryImportResult::ImportedBatch { imports } => {
+                let skill_name = match imports.as_slice() {
+                    [import] => Some(import.skill_name.clone()),
+                    _ => None,
+                };
+                Ok(TerminalOperationOutcome::Completed(
+                    AppOperationResult::success(
+                        operation,
+                        skill_name,
+                        imports.iter().map(|import| import.actions.len()).sum(),
+                    ),
                 ))
             }
             crate::RepositoryImportResult::Selection(selection) => {
@@ -381,7 +400,7 @@ mod tests {
     use crate::{
         AgentEnablement, AgentEntries, AgentEntryStatus, SkillAgent, SkillEntry, SkillInventory,
         SkillRepositoryCheckout, SkillRepositoryFetchError, SkillRepositoryProvider, SkillSource,
-        SkillUrlFetchError, SkillUrlFetcher,
+        SkillUrlFetchError, SkillUrlFetcher, tui::AppOperationStatus,
     };
 
     use super::*;
@@ -403,7 +422,7 @@ mod tests {
             &provider,
             AppOperationRequest::RepositoryImport {
                 repository: "https://example.test/repo.git".to_string(),
-                selected_skill_path: None,
+                selected_skill_paths: Vec::new(),
             },
         )
         .expect("repository selection succeeds");
@@ -429,7 +448,7 @@ mod tests {
             &provider,
             AppOperationRequest::RepositoryImport {
                 repository: "https://example.test/repo.git".to_string(),
-                selected_skill_path: Some("repo-beta".to_string()),
+                selected_skill_paths: vec!["repo-beta".to_string()],
             },
         )
         .expect("selected repository import succeeds");
@@ -446,6 +465,60 @@ mod tests {
                 )
             }
         }
+        assert!(
+            roots
+                .imports_root
+                .join("repo-beta")
+                .join("SKILL.md")
+                .exists()
+        );
+    }
+
+    #[test]
+    fn repository_import_request_with_multiple_selected_paths_reports_aggregate_result() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let roots = roots(temp.path());
+        let repository = temp.path().join("repo");
+        write_skill(&repository, "repo-alpha", "First repo skill.");
+        write_skill(&repository, "repo-beta", "Second repo skill.");
+        let provider = StaticRepositoryProvider {
+            repository_path: repository,
+        };
+
+        let imported = execute_operation_request(
+            &roots,
+            &UnusedFetcher,
+            &provider,
+            AppOperationRequest::RepositoryImport {
+                repository: "https://example.test/repo.git".to_string(),
+                selected_skill_paths: vec!["repo-alpha".to_string(), "repo-beta".to_string()],
+            },
+        )
+        .expect("selected repository batch import succeeds");
+
+        match imported {
+            TerminalOperationOutcome::Completed(result) => {
+                assert_eq!(result.operation, "repository import");
+                assert_eq!(result.skill_name, None);
+                assert_eq!(
+                    result.status,
+                    AppOperationStatus::Success { action_count: 6 }
+                );
+            }
+            TerminalOperationOutcome::RepositorySelection(selection) => {
+                panic!(
+                    "expected completed import, got {} choices",
+                    selection.skills.len()
+                )
+            }
+        }
+        assert!(
+            roots
+                .imports_root
+                .join("repo-alpha")
+                .join("SKILL.md")
+                .exists()
+        );
         assert!(
             roots
                 .imports_root

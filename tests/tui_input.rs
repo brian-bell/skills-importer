@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use skill_importer::{
     RepositorySkillCandidate, SkillAgent,
     tui::{
@@ -103,6 +105,7 @@ fn repository_selection_keys_move_confirm_cancel_and_ignore_text() {
             skills: vec![candidate("a", "A", "a"), candidate("b", "B", "b")],
         },
         selected_candidate: 0,
+        checked_candidate_paths: BTreeSet::new(),
     };
 
     assert_eq!(
@@ -116,6 +119,10 @@ fn repository_selection_keys_move_confirm_cancel_and_ignore_text() {
     assert_eq!(
         action_for_input(&mode, AppInput::Enter),
         InputOutcome::Action(AppAction::ChooseRepositoryCandidate)
+    );
+    assert_eq!(
+        action_for_input(&mode, AppInput::Char(' ')),
+        InputOutcome::Action(AppAction::ToggleRepositoryCandidate)
     );
     assert_eq!(
         action_for_input(&mode, AppInput::Escape),

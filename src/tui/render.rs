@@ -128,10 +128,11 @@ fn render_repository_selection(frame: &mut Frame<'_>, state: &AppState, area: Re
         candidates
             .iter()
             .map(|candidate| {
-                let marker = if candidate.selected { "> " } else { "  " };
+                let focus_marker = if candidate.focused { ">" } else { " " };
+                let check_marker = if candidate.checked { "[x]" } else { "[ ]" };
                 let description = candidate.description.as_deref().unwrap_or("");
                 ListItem::new(format!(
-                    "{marker}{} | {} | {}",
+                    "{focus_marker} {check_marker} {} | {} | {}",
                     candidate.name, candidate.relative_path, description
                 ))
             })

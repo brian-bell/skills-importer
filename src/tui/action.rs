@@ -12,6 +12,7 @@ pub enum AppAction {
     OperationFinished(AppOperationResult),
     RepositorySelectionLoaded(crate::RepositorySkillSelection),
     MoveRepositoryCandidate(SelectionDelta),
+    ToggleRepositoryCandidate,
     ChooseRepositoryCandidate,
     CancelRepositorySelection,
     CancelPrompt,
@@ -78,7 +79,7 @@ pub enum AppOperationRequest {
     },
     RepositoryImport {
         repository: String,
-        selected_skill_path: Option<String>,
+        selected_skill_paths: Vec<String>,
     },
 }
 
@@ -189,6 +190,7 @@ pub fn action_for_input(
             AppInput::Down | AppInput::Char('j') => {
                 InputOutcome::Action(AppAction::MoveRepositoryCandidate(SelectionDelta::Next))
             }
+            AppInput::Char(' ') => InputOutcome::Action(AppAction::ToggleRepositoryCandidate),
             AppInput::Enter => InputOutcome::Action(AppAction::ChooseRepositoryCandidate),
             AppInput::Escape => InputOutcome::Action(AppAction::CancelRepositorySelection),
             AppInput::Char('q') => InputOutcome::Quit,
@@ -249,6 +251,17 @@ impl AppOperationResult {
         match result {
             RepositoryImportResult::Imported(import) => {
                 Some(Self::from_import("repository import", import))
+            }
+            RepositoryImportResult::ImportedBatch { imports } => {
+                let skill_name = match imports.as_slice() {
+                    [import] => Some(import.skill_name.clone()),
+                    _ => None,
+                };
+                Some(Self::success(
+                    "repository import",
+                    skill_name,
+                    imports.iter().map(|import| import.actions.len()).sum(),
+                ))
             }
             RepositoryImportResult::Selection(_) => None,
         }

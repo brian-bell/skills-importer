@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::env;
 use std::fmt;
 use std::fs;
@@ -94,7 +94,7 @@ pub struct ImportUrlRequest<'url> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ImportRepositoryRequest<'repository> {
     pub repository: &'repository str,
-    pub selected_skill_path: Option<&'repository str>,
+    pub selected_skill_paths: &'repository [&'repository str],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -157,6 +157,7 @@ pub struct SkillRepositoryFetchError {
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum RepositoryImportResult {
     Imported(ImportResult),
+    ImportedBatch { imports: Vec<ImportResult> },
     Selection(RepositorySkillSelection),
 }
 
@@ -343,6 +344,15 @@ struct RawSkillMetadata {
     description: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+struct RepositoryImportPlan {
+    metadata: SkillMetadata,
+    source_path: PathBuf,
+    manifest: ImportManifest,
+    skill_path: PathBuf,
+    manifest_path: PathBuf,
+}
+
 pub fn import_markdown_skill(
     roots: &DiscoveryRoots,
     request: ImportMarkdownRequest<'_>,
@@ -392,24 +402,29 @@ pub fn import_repository_skill(
         ));
     }
 
-    if let Some(selected_skill_path) = request.selected_skill_path {
-        let selected_skill_path = normalize_repository_selector(selected_skill_path)?;
-        let matches = candidates
-            .iter()
-            .filter(|candidate| candidate.relative_path == selected_skill_path)
-            .collect::<Vec<_>>();
-        let [candidate] = matches.as_slice() else {
-            return Err(invalid_source_error(
+    if !request.selected_skill_paths.is_empty() {
+        let selected_skill_paths =
+            normalize_repository_selectors(repository_path, request.selected_skill_paths)?;
+        let selected_candidates =
+            selected_repository_candidates(repository_path, &candidates, &selected_skill_paths)?;
+        if selected_candidates.len() == 1 {
+            let import = import_repository_candidate(
+                roots,
+                request.repository,
                 repository_path,
-                format!(
-                    "repository skill selection `{}` does not match any skill in this repository",
-                    selected_skill_path
-                ),
-            ));
-        };
-        let import =
-            import_repository_candidate(roots, request.repository, repository_path, candidate)?;
-        return Ok(RepositoryImportResult::Imported(import));
+                selected_candidates[0],
+            )?;
+            return Ok(RepositoryImportResult::Imported(import));
+        }
+
+        let plans = preflight_repository_imports(
+            roots,
+            request.repository,
+            repository_path,
+            &selected_candidates,
+        )?;
+        let imports = materialize_repository_imports(plans)?;
+        return Ok(RepositoryImportResult::ImportedBatch { imports });
     }
 
     if candidates.len() == 1 {
@@ -1764,6 +1779,191 @@ fn import_skill_directory(
     store_import(roots, metadata, manifest, |skill_path| {
         materialize_local_skill(source_path, skill_path, LocalSkillSourceKind::Directory)
     })
+}
+
+fn normalize_repository_selectors(
+    repository_path: &Path,
+    selectors: &[&str],
+) -> Result<Vec<String>, ImportError> {
+    let mut normalized_selectors = Vec::with_capacity(selectors.len());
+    let mut seen = BTreeSet::new();
+    for selector in selectors {
+        let normalized = normalize_repository_selector(selector)?;
+        if !seen.insert(normalized.clone()) {
+            return Err(invalid_source_error(
+                repository_path,
+                format!("duplicate repository skill selection `{normalized}`"),
+            ));
+        }
+        normalized_selectors.push(normalized);
+    }
+    Ok(normalized_selectors)
+}
+
+fn selected_repository_candidates<'candidate>(
+    repository_path: &Path,
+    candidates: &'candidate [RepositorySkillCandidate],
+    selected_skill_paths: &[String],
+) -> Result<Vec<&'candidate RepositorySkillCandidate>, ImportError> {
+    for selected_skill_path in selected_skill_paths {
+        if !candidates
+            .iter()
+            .any(|candidate| candidate.relative_path == *selected_skill_path)
+        {
+            return Err(invalid_source_error(
+                repository_path,
+                format!(
+                    "repository skill selection `{}` does not match any skill in this repository",
+                    selected_skill_path
+                ),
+            ));
+        }
+    }
+
+    let selected_skill_paths = selected_skill_paths.iter().collect::<BTreeSet<_>>();
+    Ok(candidates
+        .iter()
+        .filter(|candidate| selected_skill_paths.contains(&candidate.relative_path))
+        .collect())
+}
+
+fn preflight_repository_imports(
+    roots: &DiscoveryRoots,
+    repository: &str,
+    repository_path: &Path,
+    candidates: &[&RepositorySkillCandidate],
+) -> Result<Vec<RepositoryImportPlan>, ImportError> {
+    let imports_root =
+        canonicalize_existing_ancestor(&roots.imports_root).map_err(ImportError::Io)?;
+    let mut planned_names = BTreeSet::new();
+    let mut plans = Vec::with_capacity(candidates.len());
+
+    for candidate in candidates {
+        let source_path =
+            repository_path.join(repository_path_from_selector(&candidate.relative_path));
+        let skill_file_path = source_path.join("SKILL.md");
+        if !skill_file_path.is_file() {
+            return Err(invalid_source_error(
+                &source_path,
+                format!("skill source must contain {}", skill_file_path.display()),
+            ));
+        }
+        refuse_reserved_local_skill_entries(&source_path)?;
+        refuse_imports_root_inside_source(&source_path, &roots.imports_root)?;
+        let markdown = fs::read_to_string(&skill_file_path).map_err(ImportError::Io)?;
+        let metadata = validate_import_markdown(&markdown)?;
+        if !planned_names.insert(metadata.name.clone()) {
+            return Err(ImportError::Collision {
+                name: metadata.name.clone(),
+                path: imports_root.join(&metadata.name),
+            });
+        }
+        refuse_collection_collision(
+            &metadata.name,
+            [roots.canonical_root.as_path(), imports_root.as_path()],
+        )?;
+
+        let skill_path = imports_root.join(&metadata.name);
+        let manifest_path = skill_path.join("import.json");
+        let manifest = ImportManifest {
+            source_type: ImportSourceType::Repository,
+            source_location: Some(format!("{repository}#{}", candidate.relative_path)),
+            imported_at: current_import_time()?,
+            content_hash: directory_content_hash(&source_path)?,
+            promoted: false,
+        };
+
+        plans.push(RepositoryImportPlan {
+            metadata,
+            source_path,
+            manifest,
+            skill_path,
+            manifest_path,
+        });
+    }
+
+    Ok(plans)
+}
+
+fn materialize_repository_imports(
+    plans: Vec<RepositoryImportPlan>,
+) -> Result<Vec<ImportResult>, ImportError> {
+    let mut imports = Vec::with_capacity(plans.len());
+    let mut created_skill_paths = Vec::with_capacity(plans.len());
+    let mut created_import_roots = Vec::new();
+    for plan in plans {
+        let RepositoryImportPlan {
+            metadata,
+            source_path,
+            manifest,
+            skill_path,
+            manifest_path,
+        } = plan;
+        if let Some(imports_root) = skill_path.parent() {
+            let imports_root_existed = imports_root.exists();
+            fs::create_dir_all(imports_root)
+                .map_err(ImportError::Io)
+                .inspect_err(|_| {
+                    rollback_repository_imports(&created_skill_paths, &created_import_roots);
+                })?;
+            if !imports_root_existed
+                && !created_import_roots
+                    .iter()
+                    .any(|created_root| created_root == imports_root)
+            {
+                created_import_roots.push(imports_root.to_path_buf());
+            }
+        }
+        fs::create_dir(&skill_path)
+            .map_err(|error| {
+                if error.kind() == io::ErrorKind::AlreadyExists {
+                    ImportError::Collision {
+                        name: metadata.name.clone(),
+                        path: skill_path.clone(),
+                    }
+                } else {
+                    ImportError::Io(error)
+                }
+            })
+            .inspect_err(|_| {
+                rollback_repository_imports(&created_skill_paths, &created_import_roots);
+            })?;
+        created_skill_paths.push(skill_path.clone());
+        let content_actions = match materialize_local_skill(
+            &source_path,
+            &skill_path,
+            LocalSkillSourceKind::Directory,
+        ) {
+            Ok(actions) => actions,
+            Err(error) => {
+                rollback_repository_imports(&created_skill_paths, &created_import_roots);
+                return Err(error);
+            }
+        };
+        if let Err(error) = write_import_manifest(&manifest_path, &manifest) {
+            rollback_repository_imports(&created_skill_paths, &created_import_roots);
+            return Err(error);
+        }
+
+        imports.push(ImportResult {
+            skill_name: metadata.name,
+            skill_path: skill_path.clone(),
+            manifest_path: manifest_path.clone(),
+            manifest,
+            actions: import_actions(skill_path, content_actions, manifest_path),
+        });
+    }
+
+    Ok(imports)
+}
+
+fn rollback_repository_imports(created_skill_paths: &[PathBuf], created_import_roots: &[PathBuf]) {
+    for skill_path in created_skill_paths.iter().rev() {
+        let _ = fs::remove_dir_all(skill_path);
+    }
+    for imports_root in created_import_roots.iter().rev() {
+        let _ = fs::remove_dir(imports_root);
+    }
 }
 
 fn scan_repository_directory(

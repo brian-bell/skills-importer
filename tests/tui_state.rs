@@ -211,11 +211,32 @@ fn repository_selection_mode_shows_candidates_without_completed_result() {
     assert_eq!(candidates[0].description.as_deref(), Some("First repo"));
     assert_eq!(candidates[0].relative_path, "skills/repo-alpha");
     assert!(candidates[0].selected);
+    assert!(candidates[0].focused);
+    assert!(!candidates[0].checked);
     assert_eq!(state.latest_result(), None);
 }
 
 #[test]
-fn repository_candidate_choice_dispatches_request_without_storage_mutation() {
+fn repository_candidate_toggle_tracks_checked_state_without_dispatching() {
+    let mut state = AppState::new(inventory([]));
+    state.reduce(AppAction::RepositorySelectionLoaded(repository_selection()));
+    state.reduce(AppAction::MoveRepositoryCandidate(SelectionDelta::Next));
+
+    state.reduce(AppAction::ToggleRepositoryCandidate);
+
+    assert_eq!(state.pending_request(), None);
+    let candidates = state.repository_candidates();
+    assert!(!candidates[0].focused);
+    assert!(!candidates[0].checked);
+    assert!(candidates[1].focused);
+    assert!(candidates[1].checked);
+
+    state.reduce(AppAction::ToggleRepositoryCandidate);
+    assert!(!state.repository_candidates()[1].checked);
+}
+
+#[test]
+fn repository_candidate_choice_dispatches_focused_request_without_storage_mutation() {
     let temp = tempfile::tempdir().expect("tempdir");
     let mut state = AppState::new(inventory([]));
     state.reduce(AppAction::RepositorySelectionLoaded(repository_selection()));
@@ -227,7 +248,7 @@ fn repository_candidate_choice_dispatches_request_without_storage_mutation() {
         state.pending_request(),
         Some(&AppOperationRequest::RepositoryImport {
             repository: "https://example.test/repo.git".to_string(),
-            selected_skill_path: Some("skills/repo-beta".to_string()),
+            selected_skill_paths: vec!["skills/repo-beta".to_string()],
         })
     );
     assert!(
@@ -237,10 +258,34 @@ fn repository_candidate_choice_dispatches_request_without_storage_mutation() {
 }
 
 #[test]
+fn repository_candidate_choice_dispatches_checked_paths_in_selection_order() {
+    let mut state = AppState::new(inventory([]));
+    state.reduce(AppAction::RepositorySelectionLoaded(repository_selection()));
+    state.reduce(AppAction::ToggleRepositoryCandidate);
+    state.reduce(AppAction::MoveRepositoryCandidate(SelectionDelta::Next));
+    state.reduce(AppAction::ToggleRepositoryCandidate);
+
+    state.reduce(AppAction::ChooseRepositoryCandidate);
+
+    assert_eq!(
+        state.pending_request(),
+        Some(&AppOperationRequest::RepositoryImport {
+            repository: "https://example.test/repo.git".to_string(),
+            selected_skill_paths: vec![
+                "skills/repo-alpha".to_string(),
+                "skills/repo-beta".to_string(),
+            ],
+        })
+    );
+}
+
+#[test]
 fn repository_completion_success_exits_selection_and_failure_preserves_retry_context() {
     let mut state = AppState::new(inventory([]));
     state.reduce(AppAction::RepositorySelectionLoaded(repository_selection()));
+    state.reduce(AppAction::ToggleRepositoryCandidate);
     state.reduce(AppAction::MoveRepositoryCandidate(SelectionDelta::Next));
+    state.reduce(AppAction::ToggleRepositoryCandidate);
     state.reduce(AppAction::ChooseRepositoryCandidate);
 
     state.reduce(AppAction::CompletePendingOperation(Err(
@@ -254,7 +299,9 @@ fn repository_completion_success_exits_selection_and_failure_preserves_retry_con
     ));
     let candidates = state.repository_candidates();
     assert_eq!(candidates[1].relative_path, "skills/repo-beta");
-    assert!(candidates[1].selected);
+    assert!(candidates[1].focused);
+    assert!(candidates[0].checked);
+    assert!(candidates[1].checked);
     let failure = state.status_view().expect("failure");
     assert!(!failure.success);
     assert!(failure.message.contains("collision for repo-beta"));
