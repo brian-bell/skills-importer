@@ -314,6 +314,51 @@ fn canonical_source_wins_when_skill_exists_in_canonical_and_imports() {
 }
 
 #[test]
+fn promoted_import_metadata_survives_canonical_source_precedence() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let canonical_root = temp.path().join("canonical");
+    let imports_root = temp.path().join("imports");
+
+    write_skill(&canonical_root, "shared-skill", "Canonical description.");
+    let imported = write_skill(&imports_root, "shared-skill", "Imported description.");
+    write_import_manifest(&imported, true);
+
+    let inventory = discover_skills(&DiscoveryRoots {
+        canonical_root,
+        imports_root,
+        claude_code_root: temp.path().join("missing-claude"),
+        codex_root: temp.path().join("missing-codex"),
+    })
+    .expect("discovery succeeds");
+
+    assert_eq!(inventory.skills.len(), 1);
+    assert_eq!(inventory.skills[0].source, SkillSource::Canonical);
+    assert_eq!(
+        inventory.skills[0].description.as_deref(),
+        Some("Canonical description.")
+    );
+    assert!(inventory.skills[0].promoted);
+}
+
+#[test]
+fn malformed_import_manifest_for_imported_skill_fails_discovery() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let imports_root = temp.path().join("imports");
+    let imported = write_skill(&imports_root, "broken-manifest", "Imported skill.");
+    fs::write(imported.join("import.json"), "{not valid json").expect("manifest");
+
+    let error = discover_skills(&DiscoveryRoots {
+        canonical_root: temp.path().join("missing-canonical"),
+        imports_root,
+        claude_code_root: temp.path().join("missing-claude"),
+        codex_root: temp.path().join("missing-codex"),
+    })
+    .expect_err("malformed import manifest should fail discovery");
+
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+}
+
+#[test]
 fn quoted_frontmatter_values_strip_one_matching_quote_pair() {
     let temp = tempfile::tempdir().expect("tempdir");
     let canonical_root = temp.path().join("canonical");
@@ -351,6 +396,7 @@ fn inventory_to_json_serializes_named_enum_values_as_stable_strings() {
                 name: "canonical-helper".to_string(),
                 description: None,
                 source: SkillSource::Canonical,
+                promoted: false,
                 enablement: AgentEnablement::Both,
                 agent_entries: AgentEntries {
                     claude_code: AgentEntryStatus::SkillDirectory,
@@ -361,6 +407,7 @@ fn inventory_to_json_serializes_named_enum_values_as_stable_strings() {
                 name: "imported-helper".to_string(),
                 description: None,
                 source: SkillSource::Imported,
+                promoted: true,
                 enablement: AgentEnablement::Both,
                 agent_entries: AgentEntries {
                     claude_code: AgentEntryStatus::ImportedSymlink,
@@ -371,6 +418,7 @@ fn inventory_to_json_serializes_named_enum_values_as_stable_strings() {
                 name: "agent-only-helper".to_string(),
                 description: None,
                 source: SkillSource::AgentOnly,
+                promoted: false,
                 enablement: AgentEnablement::Neither,
                 agent_entries: AgentEntries {
                     claude_code: AgentEntryStatus::BrokenSymlink,
@@ -384,15 +432,18 @@ fn inventory_to_json_serializes_named_enum_values_as_stable_strings() {
 
     let skills = json["skills"].as_array().expect("skills array");
     assert_eq!(skills[0]["source"], "canonical");
+    assert_eq!(skills[0]["promoted"], false);
     assert_eq!(skills[0]["agent_entries"]["claude_code"], "skill_directory");
     assert_eq!(skills[0]["agent_entries"]["codex"], "canonical_symlink");
     assert_eq!(skills[1]["source"], "imported");
+    assert_eq!(skills[1]["promoted"], true);
     assert_eq!(
         skills[1]["agent_entries"]["claude_code"],
         "imported_symlink"
     );
     assert_eq!(skills[1]["agent_entries"]["codex"], "external_symlink");
     assert_eq!(skills[2]["source"], "agent_only");
+    assert_eq!(skills[2]["promoted"], false);
     assert_eq!(skills[2]["agent_entries"]["claude_code"], "broken_symlink");
     assert_eq!(skills[2]["agent_entries"]["codex"], "missing");
 }
@@ -412,6 +463,22 @@ description: {description}
     )
     .expect("skill file");
     skill_dir
+}
+
+fn write_import_manifest(skill_dir: &std::path::Path, promoted: bool) {
+    fs::write(
+        skill_dir.join("import.json"),
+        format!(
+            r#"{{
+  "source_type": "local_path",
+  "source_location": "/tmp/source",
+  "imported_at": 1,
+  "content_hash": "abc123",
+  "promoted": {promoted}
+}}"#
+        ),
+    )
+    .expect("import manifest");
 }
 
 fn find_skill<'inventory>(

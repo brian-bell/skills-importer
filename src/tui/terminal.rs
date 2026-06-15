@@ -695,6 +695,7 @@ description: {description}
             name: name.to_string(),
             description: Some(description.to_string()),
             source,
+            promoted: false,
             enablement: AgentEnablement::Neither,
             agent_entries: AgentEntries {
                 claude_code: AgentEntryStatus::Missing,

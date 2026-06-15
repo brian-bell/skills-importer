@@ -45,6 +45,7 @@ pub enum AppInteractionMode {
 pub struct SkillRow {
     pub name: String,
     pub description: Option<String>,
+    pub promoted: bool,
     pub selected: bool,
 }
 
@@ -188,6 +189,7 @@ impl AppState {
                 SkillRow {
                     name: skill.name.clone(),
                     description: skill.description.clone(),
+                    promoted: skill.promoted,
                     selected: self.selected_visible == Some(visible_index),
                 }
             })
