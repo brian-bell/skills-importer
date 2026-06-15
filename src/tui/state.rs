@@ -155,6 +155,7 @@ impl AppState {
                 self.complete_operation(request, result)
             }
             AppAction::BeginImportPrompt(source) => {
+                self.latest_result = None;
                 self.mode = AppInteractionMode::ImportPrompt { source };
                 self.prompt_text.clear();
             }
@@ -169,6 +170,7 @@ impl AppState {
             }
             AppAction::PromptChanged(input) => self.apply_prompt_input(&input),
             AppAction::DeletePromptChar => {
+                self.latest_result = None;
                 self.prompt_text.pop();
             }
             AppAction::SubmitPrompt => self.submit_prompt(),
@@ -482,6 +484,7 @@ impl AppState {
     }
 
     fn apply_prompt_input(&mut self, input: &str) {
+        self.latest_result = None;
         self.prompt_text.push_str(input);
     }
 
