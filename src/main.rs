@@ -1,15 +1,18 @@
 use std::env;
 use std::ffi::OsString;
 use std::io::{self, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::ExitCode;
 use std::time::Duration;
 
+mod cli;
+
+use cli::{Command, RootDefaults};
 use skill_importer::{
     DeleteImportRequest, DiscoveryRoots, ImportLocalPathRequest, ImportMarkdownRequest,
-    ImportUrlRequest, PromoteSkillRequest, SkillAgent, SkillRepositoryCheckout,
-    SkillRepositoryFetchError, SkillRepositoryProvider, SkillUrlFetchError, SkillUrlFetcher,
-    json_adapter, tui::run_tui, workflow,
+    ImportUrlRequest, PromoteSkillRequest, SkillRepositoryCheckout, SkillRepositoryFetchError,
+    SkillRepositoryProvider, SkillUrlFetchError, SkillUrlFetcher, json_adapter, tui::run_tui,
+    workflow,
 };
 
 const MAX_SKILL_MARKDOWN_BYTES: u64 = 1024 * 1024;
@@ -54,10 +57,13 @@ fn run_with_services_with_defaults(
     tui_runner: &impl TuiRunner,
     defaults: &RootDefaults,
 ) -> Result<(), String> {
-    let command = Command::parse(args, defaults)?;
+    let command = cli::parse_command(args, defaults)?;
     let repository_provider = UnavailableRepositoryProvider;
 
     match command {
+        Command::Help { message } => stdout
+            .write_all(message.as_bytes())
+            .map_err(|error| format!("failed to write help: {error}")),
         Command::List { roots } => {
             let outcome = workflow::execute(
                 &roots,
@@ -194,603 +200,12 @@ impl TuiRunner for DisabledTuiRunner {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Command {
-    List {
-        roots: DiscoveryRoots,
-    },
-    ImportMarkdown {
-        roots: DiscoveryRoots,
-        source_location: Option<String>,
-    },
-    ImportPath {
-        roots: DiscoveryRoots,
-        path: PathBuf,
-    },
-    ImportUrl {
-        roots: DiscoveryRoots,
-        url: String,
-    },
-    Enable {
-        roots: DiscoveryRoots,
-        skill_name: String,
-        agents: Vec<SkillAgent>,
-    },
-    Disable {
-        roots: DiscoveryRoots,
-        skill_name: String,
-        agents: Vec<SkillAgent>,
-    },
-    Promote {
-        roots: DiscoveryRoots,
-        skill_name: String,
-    },
-    Delete {
-        roots: DiscoveryRoots,
-        skill_name: String,
-    },
-    Tui {
-        roots: DiscoveryRoots,
-    },
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct RootArgs {
-    canonical_root: Option<PathBuf>,
-    imports_root: Option<PathBuf>,
-    claude_code_root: Option<PathBuf>,
-    codex_root: Option<PathBuf>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct RootDefaults {
-    current_dir: PathBuf,
-    home: Option<OsString>,
-}
-
-impl RootDefaults {
-    fn current_process() -> Result<Self, String> {
-        Ok(Self {
-            current_dir: env::current_dir()
-                .map_err(|error| format!("failed to read current directory: {error}"))?,
-            home: env::var_os("HOME"),
-        })
-    }
-}
-
-impl Command {
-    fn parse(
-        args: impl IntoIterator<Item = OsString>,
-        defaults: &RootDefaults,
-    ) -> Result<Self, String> {
-        let mut args = args.into_iter();
-        let Some(command) = args.next() else {
-            return Err(usage());
-        };
-
-        match command.to_str() {
-            Some("list") => parse_list_command(args, defaults),
-            Some("import") => parse_import_command(args, defaults),
-            Some("enable") => {
-                parse_enable_disable_command(args, EnableDisableCommand::Enable, defaults)
-            }
-            Some("disable") => {
-                parse_enable_disable_command(args, EnableDisableCommand::Disable, defaults)
-            }
-            Some("promote") => parse_promote_command(args, defaults),
-            Some("delete") => parse_delete_command(args, defaults),
-            Some("tui") => parse_tui_command(args, defaults),
-            _ => Err(format!(
-                "unknown command `{}`\n{}",
-                display_arg(command),
-                usage()
-            )),
-        }
-    }
-}
-
-fn parse_list_command(
-    mut args: impl Iterator<Item = OsString>,
-    defaults: &RootDefaults,
-) -> Result<Command, String> {
-    let mut saw_json = false;
-    let mut roots = RootArgs::default();
-
-    while let Some(arg) = args.next() {
-        match arg.to_str() {
-            Some("--json") => saw_json = true,
-            Some("--canonical-root") => {
-                roots.canonical_root = Some(next_path(&mut args, "--canonical-root")?);
-            }
-            Some("--imports-root") => {
-                roots.imports_root = Some(next_path(&mut args, "--imports-root")?);
-            }
-            Some("--claude-code-root") => {
-                roots.claude_code_root = Some(next_path(&mut args, "--claude-code-root")?);
-            }
-            Some("--codex-root") => {
-                roots.codex_root = Some(next_path(&mut args, "--codex-root")?);
-            }
-            _ => {
-                return Err(format!(
-                    "unknown argument `{}`\n{}",
-                    display_arg(arg),
-                    usage()
-                ));
-            }
-        }
-    }
-
-    if !saw_json {
-        return Err("list currently requires --json".to_string());
-    }
-
-    Ok(Command::List {
-        roots: roots.into_discovery_roots(defaults)?,
-    })
-}
-
-fn parse_import_command(
-    mut args: impl Iterator<Item = OsString>,
-    defaults: &RootDefaults,
-) -> Result<Command, String> {
-    let Some(import_kind) = args.next() else {
-        return Err(format!("import requires a kind\n{}", usage()));
-    };
-
-    match import_kind.to_str() {
-        Some("markdown") => parse_import_markdown_command(args, defaults),
-        Some("path") => parse_import_path_command(args, defaults),
-        Some("url") => parse_import_url_command(args, defaults),
-        _ => Err(format!(
-            "unknown import kind `{}`\n{}",
-            display_arg(import_kind),
-            usage()
-        )),
-    }
-}
-
-fn parse_import_markdown_command(
-    mut args: impl Iterator<Item = OsString>,
-    defaults: &RootDefaults,
-) -> Result<Command, String> {
-    let mut saw_json = false;
-    let mut roots = RootArgs::default();
-    let mut source_location = None;
-
-    while let Some(arg) = args.next() {
-        match arg.to_str() {
-            Some("--json") => saw_json = true,
-            Some("--source-location") => {
-                source_location = Some(next_string(&mut args, "--source-location")?);
-            }
-            Some("--canonical-root") => {
-                roots.canonical_root = Some(next_path(&mut args, "--canonical-root")?);
-            }
-            Some("--imports-root") => {
-                roots.imports_root = Some(next_path(&mut args, "--imports-root")?);
-            }
-            Some("--claude-code-root") => {
-                roots.claude_code_root = Some(next_path(&mut args, "--claude-code-root")?);
-            }
-            Some("--codex-root") => {
-                roots.codex_root = Some(next_path(&mut args, "--codex-root")?);
-            }
-            _ => {
-                return Err(format!(
-                    "unknown argument `{}`\n{}",
-                    display_arg(arg),
-                    usage()
-                ));
-            }
-        }
-    }
-
-    if !saw_json {
-        return Err("import markdown currently requires --json".to_string());
-    }
-
-    Ok(Command::ImportMarkdown {
-        roots: roots.into_discovery_roots(defaults)?,
-        source_location,
-    })
-}
-
-fn parse_import_path_command(
-    mut args: impl Iterator<Item = OsString>,
-    defaults: &RootDefaults,
-) -> Result<Command, String> {
-    let mut saw_json = false;
-    let mut roots = RootArgs::default();
-    let mut path = None;
-
-    while let Some(arg) = args.next() {
-        match arg.to_str() {
-            Some("--json") => saw_json = true,
-            Some("--path") => {
-                path = Some(next_path(&mut args, "--path")?);
-            }
-            Some("--canonical-root") => {
-                roots.canonical_root = Some(next_path(&mut args, "--canonical-root")?);
-            }
-            Some("--imports-root") => {
-                roots.imports_root = Some(next_path(&mut args, "--imports-root")?);
-            }
-            Some("--claude-code-root") => {
-                roots.claude_code_root = Some(next_path(&mut args, "--claude-code-root")?);
-            }
-            Some("--codex-root") => {
-                roots.codex_root = Some(next_path(&mut args, "--codex-root")?);
-            }
-            _ => {
-                return Err(format!(
-                    "unknown argument `{}`\n{}",
-                    display_arg(arg),
-                    usage()
-                ));
-            }
-        }
-    }
-
-    if !saw_json {
-        return Err("import path currently requires --json".to_string());
-    }
-
-    Ok(Command::ImportPath {
-        roots: roots.into_discovery_roots(defaults)?,
-        path: path.ok_or_else(|| "import path requires --path".to_string())?,
-    })
-}
-
-fn parse_import_url_command(
-    mut args: impl Iterator<Item = OsString>,
-    defaults: &RootDefaults,
-) -> Result<Command, String> {
-    let mut saw_json = false;
-    let mut roots = RootArgs::default();
-    let mut url = None;
-
-    while let Some(arg) = args.next() {
-        match arg.to_str() {
-            Some("--json") => saw_json = true,
-            Some("--url") => {
-                url = Some(next_string(&mut args, "--url")?);
-            }
-            Some("--canonical-root") => {
-                roots.canonical_root = Some(next_path(&mut args, "--canonical-root")?);
-            }
-            Some("--imports-root") => {
-                roots.imports_root = Some(next_path(&mut args, "--imports-root")?);
-            }
-            Some("--claude-code-root") => {
-                roots.claude_code_root = Some(next_path(&mut args, "--claude-code-root")?);
-            }
-            Some("--codex-root") => {
-                roots.codex_root = Some(next_path(&mut args, "--codex-root")?);
-            }
-            _ => {
-                return Err(format!(
-                    "unknown argument `{}`\n{}",
-                    display_arg(arg),
-                    usage()
-                ));
-            }
-        }
-    }
-
-    if !saw_json {
-        return Err("import url currently requires --json".to_string());
-    }
-
-    Ok(Command::ImportUrl {
-        roots: roots.into_discovery_roots(defaults)?,
-        url: url.ok_or_else(|| "import url requires --url".to_string())?,
-    })
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum EnableDisableCommand {
-    Enable,
-    Disable,
-}
-
-fn parse_enable_disable_command(
-    mut args: impl Iterator<Item = OsString>,
-    command: EnableDisableCommand,
-    defaults: &RootDefaults,
-) -> Result<Command, String> {
-    let mut saw_json = false;
-    let mut roots = RootArgs::default();
-    let mut skill_name = None;
-    let mut agents = Vec::new();
-
-    while let Some(arg) = args.next() {
-        match arg.to_str() {
-            Some("--json") => saw_json = true,
-            Some("--skill") => {
-                skill_name = Some(next_string(&mut args, "--skill")?);
-            }
-            Some("--agent") => {
-                agents.push(parse_agent(&next_string(&mut args, "--agent")?)?);
-            }
-            Some("--canonical-root") => {
-                roots.canonical_root = Some(next_path(&mut args, "--canonical-root")?);
-            }
-            Some("--imports-root") => {
-                roots.imports_root = Some(next_path(&mut args, "--imports-root")?);
-            }
-            Some("--claude-code-root") => {
-                roots.claude_code_root = Some(next_path(&mut args, "--claude-code-root")?);
-            }
-            Some("--codex-root") => {
-                roots.codex_root = Some(next_path(&mut args, "--codex-root")?);
-            }
-            _ => {
-                return Err(format!(
-                    "unknown argument `{}`\n{}",
-                    display_arg(arg),
-                    usage()
-                ));
-            }
-        }
-    }
-
-    let command_name = match command {
-        EnableDisableCommand::Enable => "enable",
-        EnableDisableCommand::Disable => "disable",
-    };
-    if !saw_json {
-        return Err(format!("{command_name} currently requires --json"));
-    }
-    if agents.is_empty() {
-        return Err(format!("{command_name} requires at least one --agent"));
-    }
-
-    let roots = roots.into_discovery_roots(defaults)?;
-    let skill_name = skill_name.ok_or_else(|| format!("{command_name} requires --skill"))?;
-    match command {
-        EnableDisableCommand::Enable => Ok(Command::Enable {
-            roots,
-            skill_name,
-            agents,
-        }),
-        EnableDisableCommand::Disable => Ok(Command::Disable {
-            roots,
-            skill_name,
-            agents,
-        }),
-    }
-}
-
-fn parse_agent(value: &str) -> Result<SkillAgent, String> {
-    match value {
-        "claude-code" => Ok(SkillAgent::ClaudeCode),
-        "codex" => Ok(SkillAgent::Codex),
-        _ => Err(format!(
-            "unknown agent `{value}`; expected `claude-code` or `codex`"
-        )),
-    }
-}
-
-fn parse_promote_command(
-    mut args: impl Iterator<Item = OsString>,
-    defaults: &RootDefaults,
-) -> Result<Command, String> {
-    let mut saw_json = false;
-    let mut roots = RootArgs::default();
-    let mut skill_name = None;
-
-    while let Some(arg) = args.next() {
-        match arg.to_str() {
-            Some("--json") => saw_json = true,
-            Some("--skill") => {
-                skill_name = Some(next_string(&mut args, "--skill")?);
-            }
-            Some("--canonical-root") => {
-                roots.canonical_root = Some(next_path(&mut args, "--canonical-root")?);
-            }
-            Some("--imports-root") => {
-                roots.imports_root = Some(next_path(&mut args, "--imports-root")?);
-            }
-            Some("--claude-code-root") => {
-                roots.claude_code_root = Some(next_path(&mut args, "--claude-code-root")?);
-            }
-            Some("--codex-root") => {
-                roots.codex_root = Some(next_path(&mut args, "--codex-root")?);
-            }
-            _ => {
-                return Err(format!(
-                    "unknown argument `{}`\n{}",
-                    display_arg(arg),
-                    usage()
-                ));
-            }
-        }
-    }
-
-    if !saw_json {
-        return Err("promote currently requires --json".to_string());
-    }
-
-    Ok(Command::Promote {
-        roots: roots.into_discovery_roots(defaults)?,
-        skill_name: skill_name.ok_or_else(|| "promote requires --skill".to_string())?,
-    })
-}
-
-fn parse_delete_command(
-    mut args: impl Iterator<Item = OsString>,
-    defaults: &RootDefaults,
-) -> Result<Command, String> {
-    let mut saw_json = false;
-    let mut roots = RootArgs::default();
-    let mut skill_name = None;
-
-    while let Some(arg) = args.next() {
-        match arg.to_str() {
-            Some("--json") => saw_json = true,
-            Some("--skill") => {
-                skill_name = Some(next_string(&mut args, "--skill")?);
-            }
-            Some("--canonical-root") => {
-                roots.canonical_root = Some(next_path(&mut args, "--canonical-root")?);
-            }
-            Some("--imports-root") => {
-                roots.imports_root = Some(next_path(&mut args, "--imports-root")?);
-            }
-            Some("--claude-code-root") => {
-                roots.claude_code_root = Some(next_path(&mut args, "--claude-code-root")?);
-            }
-            Some("--codex-root") => {
-                roots.codex_root = Some(next_path(&mut args, "--codex-root")?);
-            }
-            _ => {
-                return Err(format!(
-                    "unknown argument `{}`\n{}",
-                    display_arg(arg),
-                    usage()
-                ));
-            }
-        }
-    }
-
-    if !saw_json {
-        return Err("delete currently requires --json".to_string());
-    }
-
-    Ok(Command::Delete {
-        roots: roots.into_discovery_roots(defaults)?,
-        skill_name: skill_name.ok_or_else(|| "delete requires --skill".to_string())?,
-    })
-}
-
-fn parse_tui_command(
-    mut args: impl Iterator<Item = OsString>,
-    defaults: &RootDefaults,
-) -> Result<Command, String> {
-    let mut roots = RootArgs::default();
-
-    while let Some(arg) = args.next() {
-        match arg.to_str() {
-            Some("--canonical-root") => {
-                roots.canonical_root = Some(next_path(&mut args, "--canonical-root")?);
-            }
-            Some("--imports-root") => {
-                roots.imports_root = Some(next_path(&mut args, "--imports-root")?);
-            }
-            Some("--claude-code-root") => {
-                roots.claude_code_root = Some(next_path(&mut args, "--claude-code-root")?);
-            }
-            Some("--codex-root") => {
-                roots.codex_root = Some(next_path(&mut args, "--codex-root")?);
-            }
-            _ => {
-                return Err(format!(
-                    "unknown argument `{}`\n{}",
-                    display_arg(arg),
-                    usage()
-                ));
-            }
-        }
-    }
-
-    Ok(Command::Tui {
-        roots: roots.into_discovery_roots(defaults)?,
-    })
-}
-
 fn write_json_outcome(
     stdout: &mut impl Write,
     outcome: &workflow::OperationOutcome,
 ) -> Result<(), String> {
     json_adapter::write_outcome(stdout, outcome)
         .map_err(|error| format!("failed to write JSON: {error}"))
-}
-
-impl RootArgs {
-    fn into_discovery_roots(self, defaults: &RootDefaults) -> Result<DiscoveryRoots, String> {
-        let default_root = default_runtime_root(&defaults.current_dir);
-        let home = match (&self.claude_code_root, &self.codex_root) {
-            (Some(_), Some(_)) => None,
-            _ => Some(home_dir_from(defaults.home.clone())?),
-        };
-
-        Ok(DiscoveryRoots {
-            canonical_root: self
-                .canonical_root
-                .unwrap_or_else(|| default_canonical_root(&defaults.current_dir)),
-            imports_root: self
-                .imports_root
-                .unwrap_or_else(|| default_root.join(".skill-importer").join("imports")),
-            claude_code_root: self.claude_code_root.unwrap_or_else(|| {
-                home.as_ref()
-                    .expect("home resolved when Claude Code root is defaulted")
-                    .join(".claude")
-                    .join("skills")
-            }),
-            codex_root: self.codex_root.unwrap_or_else(|| {
-                home.as_ref()
-                    .expect("home resolved when Codex root is defaulted")
-                    .join(".agents")
-                    .join("skills")
-            }),
-        })
-    }
-}
-
-fn default_runtime_root(current_dir: &Path) -> PathBuf {
-    find_catalog_repo_root(current_dir).unwrap_or_else(|| current_dir.to_path_buf())
-}
-
-fn default_canonical_root(current_dir: &Path) -> PathBuf {
-    find_catalog_repo_root(current_dir)
-        .map(|repo_root| repo_root.join("catalog").join("portable"))
-        .unwrap_or_else(|| current_dir.to_path_buf())
-}
-
-fn find_catalog_repo_root(current_dir: &Path) -> Option<PathBuf> {
-    current_dir
-        .ancestors()
-        .find(|ancestor| {
-            ancestor.join("AGENTS.md").is_file()
-                && ancestor.join("catalog").join("portable").is_dir()
-        })
-        .map(Path::to_path_buf)
-}
-
-fn next_path(
-    args: &mut impl Iterator<Item = OsString>,
-    flag: &'static str,
-) -> Result<PathBuf, String> {
-    args.next()
-        .map(PathBuf::from)
-        .ok_or_else(|| format!("{flag} requires a path"))
-}
-
-fn next_string(
-    args: &mut impl Iterator<Item = OsString>,
-    flag: &'static str,
-) -> Result<String, String> {
-    args.next()
-        .map(display_arg)
-        .ok_or_else(|| format!("{flag} requires a value"))
-}
-
-fn home_dir_from(home: Option<OsString>) -> Result<PathBuf, String> {
-    let home =
-        home.ok_or_else(|| "failed to resolve home directory: HOME is not set".to_string())?;
-    let home = PathBuf::from(home);
-    if !home.is_absolute() {
-        return Err(format!(
-            "failed to resolve home directory: HOME must be an absolute path, got `{}`",
-            home.display()
-        ));
-    }
-    Ok(home)
-}
-
-fn display_arg(arg: OsString) -> String {
-    arg.to_string_lossy().into_owned()
 }
 
 struct UreqUrlFetcher;
@@ -853,10 +268,6 @@ fn read_limited_skill_markdown(reader: impl Read) -> Result<String, SkillUrlFetc
     String::from_utf8(bytes).map_err(|error| SkillUrlFetchError {
         message: format!("skill Markdown response is not valid UTF-8: {error}"),
     })
-}
-
-fn usage() -> String {
-    "usage: skill-importer list --json [--canonical-root PATH] [--imports-root PATH] [--claude-code-root PATH] [--codex-root PATH]\n       skill-importer import markdown --json [--source-location VALUE] [--canonical-root PATH] [--imports-root PATH] [--claude-code-root PATH] [--codex-root PATH]\n       skill-importer import path --json --path PATH [--canonical-root PATH] [--imports-root PATH] [--claude-code-root PATH] [--codex-root PATH]\n       skill-importer import url --json --url URL [--canonical-root PATH] [--imports-root PATH] [--claude-code-root PATH] [--codex-root PATH]\n       skill-importer enable --json --skill NAME --agent claude-code|codex [--agent claude-code|codex] [--canonical-root PATH] [--imports-root PATH] [--claude-code-root PATH] [--codex-root PATH]\n       skill-importer disable --json --skill NAME --agent claude-code|codex [--agent claude-code|codex] [--canonical-root PATH] [--imports-root PATH] [--claude-code-root PATH] [--codex-root PATH]\n       skill-importer promote --json --skill NAME [--canonical-root PATH] [--imports-root PATH] [--claude-code-root PATH] [--codex-root PATH]\n       skill-importer delete --json --skill NAME [--canonical-root PATH] [--imports-root PATH] [--claude-code-root PATH] [--codex-root PATH]\n       skill-importer tui [--canonical-root PATH] [--imports-root PATH] [--claude-code-root PATH] [--codex-root PATH]".to_string()
 }
 
 #[cfg(test)]
@@ -1001,8 +412,8 @@ description: Imported from a URL through the command.
             &runner,
         )
         .expect_err("bare command still reports usage");
-        assert!(error.contains("usage: skill-importer list --json"));
-        assert!(error.contains("skill-importer tui"));
+        assert!(error.contains("Usage: skill-importer"));
+        assert!(error.contains("Commands:"));
         assert_eq!(
             runner.calls(),
             1,
@@ -1086,56 +497,22 @@ description: Imported from a URL through the command.
     }
 
     #[test]
-    fn default_roots_use_skills_catalog_when_launched_from_nested_directory() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let repo_root = temp.path();
-        let catalog_root = repo_root.join("catalog").join("portable");
-        let nested = repo_root.join("docs").join("nested");
-        std::fs::write(repo_root.join("AGENTS.md"), "# Test repo\n").expect("agents");
-        std::fs::create_dir_all(nested.as_path()).expect("nested dir");
-        std::fs::create_dir_all(&catalog_root).expect("catalog root");
+    fn help_command_writes_to_stdout_without_running_tui() {
+        let runner = RecordingTuiRunner::default();
+        let mut stdout = Vec::new();
 
-        assert_eq!(default_canonical_root(&nested), catalog_root);
-        assert_eq!(default_runtime_root(&nested), repo_root);
-    }
+        run_with_services(
+            [OsString::from("--help")],
+            &mut stdout,
+            &StaticFetcher { markdown: "" },
+            &runner,
+        )
+        .expect("help succeeds");
 
-    #[test]
-    fn default_roots_ignore_unrelated_catalog_portable_directories() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let nested = temp.path().join("nested");
-        std::fs::create_dir_all(temp.path().join("catalog").join("portable"))
-            .expect("catalog root");
-        std::fs::create_dir_all(&nested).expect("nested dir");
-
-        assert_eq!(default_canonical_root(&nested), nested);
-        assert_eq!(default_runtime_root(&nested), nested);
-    }
-
-    #[test]
-    fn default_roots_fall_back_to_current_directory_outside_catalog_repo() {
-        let temp = tempfile::tempdir().expect("tempdir");
-
-        assert_eq!(default_canonical_root(temp.path()), temp.path());
-        assert_eq!(default_runtime_root(temp.path()), temp.path());
-    }
-
-    #[test]
-    fn home_dir_requires_home_to_be_set_and_absolute() {
-        assert_eq!(
-            home_dir_from(None).expect_err("missing HOME should fail"),
-            "failed to resolve home directory: HOME is not set"
-        );
-
-        assert_eq!(
-            home_dir_from(Some(OsString::from("relative-home")))
-                .expect_err("relative HOME should fail"),
-            "failed to resolve home directory: HOME must be an absolute path, got `relative-home`"
-        );
-
-        assert_eq!(
-            home_dir_from(Some(OsString::from("/tmp/home"))).expect("absolute HOME"),
-            PathBuf::from("/tmp/home")
-        );
+        let help = String::from_utf8(stdout).expect("help output is utf8");
+        assert!(help.contains("Usage: skill-importer"));
+        assert!(help.contains("Commands:"));
+        assert_eq!(runner.calls(), 0, "help must not launch the TUI runner");
     }
 
     #[derive(Default)]
