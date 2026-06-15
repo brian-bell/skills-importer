@@ -13,7 +13,9 @@ use ratatui::{
 use crate::{
     DeleteImportRequest, DiscoveryRoots, ImportLocalPathRequest, ImportMarkdownRequest,
     ImportRepositoryRequest, ImportUrlRequest, PromoteSkillRequest, SkillRepositoryCheckout,
-    SkillRepositoryFetchError, SkillRepositoryProvider, SkillUrlFetcher, discover_skills, workflow,
+    SkillRepositoryFetchError, SkillRepositoryProvider, SkillUrlFetcher,
+    analyzer::{AnalyzeSkillRequest, SkillAnalyzerLauncher, TerminalSkillAnalyzerLauncher},
+    discover_skills, workflow,
 };
 
 use super::{
@@ -26,13 +28,15 @@ pub fn run_tui(
     url_fetcher: &impl SkillUrlFetcher,
 ) -> Result<(), io::Error> {
     let repository_provider = GitRepositoryProvider;
-    run_tui_with_services(roots, url_fetcher, &repository_provider)
+    let analyzer_launcher = TerminalSkillAnalyzerLauncher;
+    run_tui_with_services(roots, url_fetcher, &repository_provider, &analyzer_launcher)
 }
 
 fn run_tui_with_services(
     roots: &DiscoveryRoots,
     url_fetcher: &impl SkillUrlFetcher,
     repository_provider: &impl SkillRepositoryProvider,
+    analyzer_launcher: &impl SkillAnalyzerLauncher,
 ) -> Result<(), io::Error> {
     let inventory = discover_skills(roots)?;
     let mut state = AppState::new(inventory);
@@ -45,6 +49,7 @@ fn run_tui_with_services(
         roots,
         url_fetcher,
         repository_provider,
+        analyzer_launcher,
         &mut state,
     );
     result.and_then(|()| terminal.show_cursor())
@@ -55,6 +60,7 @@ fn run_event_loop(
     roots: &DiscoveryRoots,
     url_fetcher: &impl SkillUrlFetcher,
     repository_provider: &impl SkillRepositoryProvider,
+    analyzer_launcher: &impl SkillAnalyzerLauncher,
     state: &mut AppState,
 ) -> Result<(), io::Error> {
     loop {
@@ -67,7 +73,13 @@ fn run_event_loop(
             match action_for_input(state.mode(), input) {
                 InputOutcome::Action(action) => {
                     handle_action(terminal, state, action, |request| {
-                        execute_operation_request(roots, url_fetcher, repository_provider, request)
+                        execute_operation_request(
+                            roots,
+                            url_fetcher,
+                            repository_provider,
+                            analyzer_launcher,
+                            request,
+                        )
                     })?;
                 }
                 InputOutcome::Quit => break,
@@ -144,6 +156,7 @@ fn execute_operation_request(
     roots: &DiscoveryRoots,
     url_fetcher: &impl SkillUrlFetcher,
     repository_provider: &impl SkillRepositoryProvider,
+    analyzer_launcher: &impl SkillAnalyzerLauncher,
     request: AppOperationRequest,
 ) -> Result<TerminalOperationOutcome, String> {
     match request {
@@ -235,6 +248,18 @@ fn execute_operation_request(
                     selected_skill_paths: &selected_skill_paths,
                 }),
             )
+        }
+        AppOperationRequest::AnalyzeSkill {
+            skill_name,
+            skill_dir,
+        } => {
+            let result = analyzer_launcher.launch(AnalyzeSkillRequest {
+                skill_name: skill_name.clone(),
+                skill_dir,
+            })?;
+            Ok(TerminalOperationOutcome::Completed(
+                AppOperationResult::launched_analysis(skill_name, result.report_html),
+            ))
         }
     }
 }
@@ -389,7 +414,7 @@ impl SkillRepositoryProvider for GitRepositoryProvider {
 #[cfg(test)]
 mod tests {
     use std::{
-        cell::Cell,
+        cell::{Cell, RefCell},
         fs,
         path::{Path, PathBuf},
         rc::Rc,
@@ -400,7 +425,9 @@ mod tests {
     use crate::{
         AgentEnablement, AgentEntries, AgentEntryStatus, SkillAgent, SkillEntry, SkillInventory,
         SkillRepositoryCheckout, SkillRepositoryFetchError, SkillRepositoryProvider, SkillSource,
-        SkillUrlFetchError, SkillUrlFetcher, tui::AppOperationStatus,
+        SkillUrlFetchError, SkillUrlFetcher,
+        analyzer::{AnalyzeLaunchResult, AnalyzeSkillRequest},
+        tui::AppOperationStatus,
     };
 
     use super::*;
@@ -420,6 +447,7 @@ mod tests {
             &roots,
             &UnusedFetcher,
             &provider,
+            &UnusedAnalyzer,
             AppOperationRequest::RepositoryImport {
                 repository: "https://example.test/repo.git".to_string(),
                 selected_skill_paths: Vec::new(),
@@ -446,6 +474,7 @@ mod tests {
             &roots,
             &UnusedFetcher,
             &provider,
+            &UnusedAnalyzer,
             AppOperationRequest::RepositoryImport {
                 repository: "https://example.test/repo.git".to_string(),
                 selected_skill_paths: vec!["repo-beta".to_string()],
@@ -489,6 +518,7 @@ mod tests {
             &roots,
             &UnusedFetcher,
             &provider,
+            &UnusedAnalyzer,
             AppOperationRequest::RepositoryImport {
                 repository: "https://example.test/repo.git".to_string(),
                 selected_skill_paths: vec!["repo-alpha".to_string(), "repo-beta".to_string()],
@@ -526,6 +556,58 @@ mod tests {
                 .join("SKILL.md")
                 .exists()
         );
+    }
+
+    #[test]
+    fn analyze_request_uses_launcher_and_reports_async_launch_status() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let roots = roots(temp.path());
+        let skill_dir = temp.path().join("skill");
+        let report_html = temp.path().join("report").join("index.html");
+        let analyzer = RecordingAnalyzer {
+            result: AnalyzeLaunchResult {
+                report_dir: temp.path().join("report"),
+                report_html: report_html.clone(),
+            },
+            requests: RefCell::new(Vec::new()),
+        };
+
+        let outcome = execute_operation_request(
+            &roots,
+            &UnusedFetcher,
+            &StaticRepositoryProvider {
+                repository_path: temp.path().join("unused"),
+            },
+            &analyzer,
+            AppOperationRequest::AnalyzeSkill {
+                skill_name: "alpha".to_string(),
+                skill_dir: skill_dir.clone(),
+            },
+        )
+        .expect("analysis launch succeeds");
+
+        assert_eq!(
+            analyzer.requests.borrow().as_slice(),
+            &[AnalyzeSkillRequest {
+                skill_name: "alpha".to_string(),
+                skill_dir,
+            }]
+        );
+        match outcome {
+            TerminalOperationOutcome::Completed(result) => {
+                assert_eq!(result.operation, "analyze");
+                assert_eq!(result.skill_name.as_deref(), Some("alpha"));
+                assert_eq!(
+                    result.status,
+                    AppOperationStatus::Launched {
+                        report_path: report_html
+                    }
+                );
+            }
+            TerminalOperationOutcome::RepositorySelection(_) => {
+                panic!("analyze should not return repository selection")
+            }
+        }
     }
 
     #[test]
@@ -640,6 +722,26 @@ mod tests {
         }
     }
 
+    struct UnusedAnalyzer;
+
+    impl SkillAnalyzerLauncher for UnusedAnalyzer {
+        fn launch(&self, _request: AnalyzeSkillRequest) -> Result<AnalyzeLaunchResult, String> {
+            panic!("test should not launch analyzer")
+        }
+    }
+
+    struct RecordingAnalyzer {
+        result: AnalyzeLaunchResult,
+        requests: RefCell<Vec<AnalyzeSkillRequest>>,
+    }
+
+    impl SkillAnalyzerLauncher for RecordingAnalyzer {
+        fn launch(&self, request: AnalyzeSkillRequest) -> Result<AnalyzeLaunchResult, String> {
+            self.requests.borrow_mut().push(request);
+            Ok(self.result.clone())
+        }
+    }
+
     struct StaticRepositoryProvider {
         repository_path: PathBuf,
     }
@@ -706,6 +808,7 @@ description: {description}
                 claude_code: AgentEntryStatus::Missing,
                 codex: AgentEntryStatus::Missing,
             },
+            analysis_skill_dir: None,
         }
     }
 

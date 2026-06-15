@@ -591,6 +591,65 @@ fn enable_disable_and_import_intents_become_pending_requests() {
 }
 
 #[test]
+fn analyze_intent_becomes_pending_request_for_selected_analyzable_skill() {
+    let skill_dir = std::path::PathBuf::from("/tmp/skill-importer/analyzable");
+    let mut analyzable = skill("alpha", "First", SkillSource::Canonical);
+    analyzable.analysis_skill_dir = Some(skill_dir.clone());
+    let mut state = AppState::new(inventory([analyzable]));
+
+    state.reduce(AppAction::RequestAnalyzeSelected);
+
+    assert_eq!(
+        state.pending_request(),
+        Some(&AppOperationRequest::AnalyzeSkill {
+            skill_name: "alpha".to_string(),
+            skill_dir,
+        })
+    );
+    assert_eq!(
+        state
+            .selected_detail()
+            .expect("selected")
+            .analysis_skill_dir
+            .as_deref(),
+        Some(std::path::Path::new("/tmp/skill-importer/analyzable"))
+    );
+}
+
+#[test]
+fn analyze_intent_is_ignored_without_selected_analyzable_skill() {
+    let mut state = AppState::new(inventory([skill("alpha", "First", SkillSource::Canonical)]));
+    state.reduce(AppAction::RequestAnalyzeSelected);
+    assert_eq!(state.pending_request(), None);
+
+    state.reduce(AppAction::FilterChanged("missing".to_string()));
+    state.reduce(AppAction::RequestAnalyzeSelected);
+    assert_eq!(state.pending_request(), None);
+}
+
+#[test]
+fn completed_analyze_launch_does_not_request_inventory_refresh() {
+    let mut state = AppState::new(inventory([skill("alpha", "First", SkillSource::Canonical)]));
+
+    state.reduce(AppAction::CompleteOperation {
+        request: Some(AppOperationRequest::AnalyzeSkill {
+            skill_name: "alpha".to_string(),
+            skill_dir: std::path::PathBuf::from("/tmp/skill"),
+        }),
+        result: Ok(AppOperationResult::launched_analysis(
+            "alpha".to_string(),
+            std::path::PathBuf::from("/tmp/report/index.html"),
+        )),
+    });
+
+    assert!(!state.needs_refresh());
+    assert_eq!(
+        state.status_view().expect("status").message,
+        "launched: /tmp/report/index.html"
+    );
+}
+
+#[test]
 fn prompt_cancel_and_backspace_are_distinct_from_repository_selection() {
     let mut state = AppState::new(inventory([]));
     state.reduce(AppAction::BeginImportPrompt(AppImportSource::Url));
@@ -656,6 +715,7 @@ fn skill(name: &str, description: &str, source: SkillSource) -> SkillEntry {
             claude_code: AgentEntryStatus::Missing,
             codex: AgentEntryStatus::Missing,
         },
+        analysis_skill_dir: None,
     }
 }
 

@@ -495,6 +495,7 @@ fn skill(name: &str, description: &str, source: SkillSource) -> SkillEntry {
             claude_code: AgentEntryStatus::Missing,
             codex: AgentEntryStatus::Missing,
         },
+        analysis_skill_dir: None,
     }
 }
 

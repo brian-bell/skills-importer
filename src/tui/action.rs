@@ -27,6 +27,7 @@ pub enum AppAction {
     PromptChanged(String),
     DeletePromptChar,
     SubmitPrompt,
+    RequestAnalyzeSelected,
     RequestEnableSelected,
     RequestDisableSelected,
     ConfirmPending,
@@ -82,6 +83,10 @@ pub enum AppOperationRequest {
         repository: String,
         selected_skill_paths: Vec<String>,
     },
+    AnalyzeSkill {
+        skill_name: String,
+        skill_dir: PathBuf,
+    },
 }
 
 impl AppOperationRequest {
@@ -95,6 +100,7 @@ impl AppOperationRequest {
             AppOperationRequest::ImportPath { .. } => "import path",
             AppOperationRequest::ImportUrl { .. } => "import url",
             AppOperationRequest::RepositoryImport { .. } => "repository import",
+            AppOperationRequest::AnalyzeSkill { .. } => "analyze",
         }
     }
 
@@ -108,7 +114,12 @@ impl AppOperationRequest {
             | AppOperationRequest::ImportPath { .. }
             | AppOperationRequest::ImportUrl { .. }
             | AppOperationRequest::RepositoryImport { .. } => None,
+            AppOperationRequest::AnalyzeSkill { skill_name, .. } => Some(skill_name.as_str()),
         }
+    }
+
+    pub fn mutates_inventory(&self) -> bool {
+        !matches!(self, AppOperationRequest::AnalyzeSkill { .. })
     }
 }
 
@@ -164,6 +175,7 @@ pub fn action_for_input(
             }
             AppInput::Char('e') => InputOutcome::Action(AppAction::RequestEnableSelected),
             AppInput::Char('d') => InputOutcome::Action(AppAction::RequestDisableSelected),
+            AppInput::Char('A') => InputOutcome::Action(AppAction::RequestAnalyzeSelected),
             AppInput::Char('p') => {
                 InputOutcome::Action(AppAction::BeginConfirmation(ConfirmationOperation::Promote))
             }
@@ -211,6 +223,7 @@ pub struct AppOperationResult {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppOperationStatus {
     Success { action_count: usize },
+    Launched { report_path: PathBuf },
     Failure { reason: String },
 }
 
@@ -238,6 +251,14 @@ impl AppOperationResult {
             status: AppOperationStatus::Failure {
                 reason: reason.into(),
             },
+        }
+    }
+
+    pub fn launched_analysis(skill_name: String, report_path: PathBuf) -> Self {
+        Self {
+            operation: "analyze".to_string(),
+            skill_name: Some(skill_name),
+            status: AppOperationStatus::Launched { report_path },
         }
     }
 

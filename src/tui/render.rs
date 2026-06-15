@@ -134,6 +134,12 @@ fn render_main(frame: &mut Frame<'_>, state: &AppState, area: Rect) {
                 Span::raw(source_repository.skill_path),
             ]));
         }
+        if let Some(skill_dir) = detail.analysis_skill_dir {
+            lines.push(Line::from(vec![
+                Span::raw("Analyze path: "),
+                Span::raw(skill_dir.display().to_string()),
+            ]));
+        }
         lines
     } else {
         vec![Line::from("No selected skill")]
