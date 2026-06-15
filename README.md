@@ -87,6 +87,11 @@ fallback canonical root is the current directory. JSON commands without root
 overrides use the default imports root plus user-level agent roots:
 `~/.claude/skills` for Claude Code and `~/.agents/skills` for Codex.
 
+Repository imports persist structured `source_repository` metadata in each
+import manifest. `skill-importer list --json` includes that metadata on imported
+skill entries and derives a top-level `source_repositories` list grouping
+repository-imported skills by repository.
+
 ## TUI
 
 Run the interactive TUI with:

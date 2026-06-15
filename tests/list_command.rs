@@ -27,7 +27,12 @@ fn list_command_outputs_discovered_inventory_as_json() {
     );
     unix_fs::symlink(&canonical, claude_root.join("checkout-helper")).expect("claude symlink");
 
-    write_skill(&imports_root, "draft-helper", "Imported but not enabled.");
+    let draft_import = write_skill(&imports_root, "draft-helper", "Imported but not enabled.");
+    write_repository_import_manifest(
+        &draft_import,
+        "https://example.test/skills.git",
+        "helpers/draft-helper",
+    );
     let promoted_import = write_skill(&imports_root, "promoted-helper", "Promoted import.");
     write_import_manifest(&promoted_import, true);
     let imported_enabled = write_skill(
@@ -100,8 +105,29 @@ fn list_command_outputs_discovered_inventory_as_json() {
     let draft_helper = find_skill(skills, "draft-helper");
     assert_eq!(draft_helper["source"], "imported");
     assert_eq!(draft_helper["promoted"], false);
+    assert_eq!(
+        draft_helper["source_repository"],
+        serde_json::json!({
+            "repository": "https://example.test/skills.git",
+            "skill_path": "helpers/draft-helper"
+        })
+    );
     assert_eq!(draft_helper["enablement"]["claude_code"], false);
     assert_eq!(draft_helper["enablement"]["codex"], false);
+    assert_eq!(
+        json["source_repositories"],
+        serde_json::json!([
+            {
+                "repository": "https://example.test/skills.git",
+                "skills": [
+                    {
+                        "skill_name": "draft-helper",
+                        "skill_path": "helpers/draft-helper"
+                    }
+                ]
+            }
+        ])
+    );
 
     let promoted_helper = find_skill(skills, "promoted-helper");
     assert_eq!(promoted_helper["source"], "imported");
@@ -547,6 +573,29 @@ fn write_import_manifest(skill_dir: &std::path::Path, promoted: bool) {
   "promoted": {promoted}
 }}"#
         ),
+    )
+    .expect("import manifest");
+}
+
+fn write_repository_import_manifest(
+    skill_dir: &std::path::Path,
+    repository: &str,
+    skill_path: &str,
+) {
+    fs::write(
+        skill_dir.join("import.json"),
+        serde_json::json!({
+            "source_type": "repository",
+            "source_location": format!("{repository}#{skill_path}"),
+            "source_repository": {
+                "repository": repository,
+                "skill_path": skill_path,
+            },
+            "imported_at": 1,
+            "content_hash": "abc123",
+            "promoted": false,
+        })
+        .to_string(),
     )
     .expect("import manifest");
 }

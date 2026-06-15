@@ -259,6 +259,10 @@ fn keyboard_navigation_is_bounded_and_uses_filtered_rows() {
 #[test]
 fn selected_skill_detail_projects_core_status_fields() {
     let mut entry = skill("alpha", "Detailed skill", SkillSource::Imported);
+    entry.source_repository = Some(skill_importer::ImportSourceRepository {
+        repository: "https://example.test/skills.git".to_string(),
+        skill_path: "skills/alpha".to_string(),
+    });
     entry.enablement = AgentEnablement::Both;
     entry.agent_entries = AgentEntries {
         claude_code: AgentEntryStatus::ImportedSymlink,
@@ -270,6 +274,13 @@ fn selected_skill_detail_projects_core_status_fields() {
     assert_eq!(detail.name, "alpha");
     assert_eq!(detail.description.as_deref(), Some("Detailed skill"));
     assert_eq!(detail.source, SkillSource::Imported);
+    assert_eq!(
+        detail.source_repository.as_ref(),
+        Some(&skill_importer::ImportSourceRepository {
+            repository: "https://example.test/skills.git".to_string(),
+            skill_path: "skills/alpha".to_string(),
+        })
+    );
     assert_eq!(detail.enablement, AgentEnablement::Both);
     assert_eq!(
         detail.agent_entries.claude_code,
@@ -789,6 +800,7 @@ fn promote_and_delete_require_confirmation_before_pending_request() {
 fn inventory<const N: usize>(skills: [SkillEntry; N]) -> SkillInventory {
     SkillInventory {
         skills: skills.into_iter().collect(),
+        source_repositories: Vec::new(),
     }
 }
 
@@ -797,6 +809,7 @@ fn skill(name: &str, description: &str, source: SkillSource) -> SkillEntry {
         name: name.to_string(),
         description: Some(description.to_string()),
         source,
+        source_repository: None,
         promoted: false,
         enablement: AgentEnablement::Neither,
         agent_entries: AgentEntries {

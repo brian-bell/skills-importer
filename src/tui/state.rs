@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 
 use crate::{
-    AgentEnablement, AgentEntries, AgentEntryStatus, RepositorySkillSelection, SkillAgent,
-    SkillEntry, SkillInventory, SkillSource,
+    AgentEnablement, AgentEntries, AgentEntryStatus, ImportSourceRepository,
+    RepositorySkillSelection, SkillAgent, SkillEntry, SkillInventory, SkillSource,
 };
 
 use crate::tui::action::{
@@ -55,6 +55,7 @@ pub struct SkillDetail {
     pub name: String,
     pub description: Option<String>,
     pub source: SkillSource,
+    pub source_repository: Option<ImportSourceRepository>,
     pub enablement: AgentEnablement,
     pub agent_entries: AgentEntries,
 }
@@ -199,6 +200,7 @@ impl AppState {
             name: skill.name.clone(),
             description: skill.description.clone(),
             source: skill.source,
+            source_repository: skill.source_repository.clone(),
             enablement: skill.enablement,
             agent_entries: skill.agent_entries.clone(),
         })

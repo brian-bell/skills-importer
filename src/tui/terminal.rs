@@ -532,6 +532,7 @@ mod tests {
     fn pending_frame_is_drawn_before_executing_enable_request_from_toggle() {
         let mut state = AppState::new(SkillInventory {
             skills: vec![skill("alpha", "First", SkillSource::Canonical)],
+            source_repositories: Vec::new(),
         });
         let backend = TestBackend::new(80, 20);
         let mut terminal = Terminal::new(backend).expect("terminal");
@@ -582,6 +583,7 @@ mod tests {
         enabled.agent_entries.codex = AgentEntryStatus::CanonicalSymlink;
         let mut state = AppState::new(SkillInventory {
             skills: vec![enabled],
+            source_repositories: Vec::new(),
         });
         let backend = TestBackend::new(80, 20);
         let mut terminal = Terminal::new(backend).expect("terminal");
@@ -628,7 +630,10 @@ mod tests {
 
     #[test]
     fn pending_frame_is_drawn_before_executing_url_import_request() {
-        let mut state = AppState::new(SkillInventory { skills: Vec::new() });
+        let mut state = AppState::new(SkillInventory {
+            skills: Vec::new(),
+            source_repositories: Vec::new(),
+        });
         state.reduce(AppAction::BeginImportPrompt(
             crate::tui::AppImportSource::Url,
         ));
@@ -745,6 +750,7 @@ description: {description}
             name: name.to_string(),
             description: Some(description.to_string()),
             source,
+            source_repository: None,
             promoted: false,
             enablement: AgentEnablement::Neither,
             agent_entries: AgentEntries {
