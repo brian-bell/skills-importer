@@ -108,6 +108,10 @@ impl AppState {
     }
 
     pub fn reduce(&mut self, action: AppAction) {
+        if action_clears_previous_failure(&action) {
+            self.clear_failure_result();
+        }
+
         match action {
             AppAction::FilterChanged(filter) => {
                 self.filter = filter;
@@ -488,6 +492,15 @@ impl AppState {
         self.prompt_text.push_str(input);
     }
 
+    fn clear_failure_result(&mut self) {
+        if matches!(
+            self.latest_result.as_ref().map(|result| &result.status),
+            Some(AppOperationStatus::Failure { .. })
+        ) {
+            self.latest_result = None;
+        }
+    }
+
     fn submit_prompt(&mut self) {
         match &self.mode {
             AppInteractionMode::ImportPrompt { source } => {
@@ -529,6 +542,16 @@ impl AppState {
             });
         }
     }
+}
+
+fn action_clears_previous_failure(action: &AppAction) -> bool {
+    !matches!(
+        action,
+        AppAction::OperationFinished(_)
+            | AppAction::RepositorySelectionLoaded(_)
+            | AppAction::CompletePendingOperation(_)
+            | AppAction::CompleteOperation { .. }
+    )
 }
 
 impl SourceFilter {
