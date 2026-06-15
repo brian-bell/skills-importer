@@ -305,6 +305,32 @@ fn disabled_skill_rows_are_dimmed_in_skill_list() {
     assert_skill_list_text_dimmed(&buffer, "> claude", false);
 }
 
+#[test]
+fn selected_skill_scrolls_into_view_in_long_skill_list() {
+    let mut state = AppState::new(inventory(
+        (0..20)
+            .map(|index| {
+                skill(
+                    &format!("skill-{index:02}"),
+                    "Skill",
+                    SkillSource::Canonical,
+                )
+            })
+            .collect(),
+    ));
+    for _ in 0..12 {
+        state.reduce(AppAction::MoveSelection(SelectionDelta::Next));
+    }
+
+    let buffer = render_buffer(&state, 100, 18);
+    let list_text = text_in_area(&buffer, skill_list_inner_area(*buffer.area()));
+
+    assert!(
+        list_text.contains("> skill-12"),
+        "selected row should be visible in skill list:\n{list_text}"
+    );
+}
+
 fn render_text(state: &AppState, width: u16, height: u16) -> String {
     render_buffer(state, width, height)
         .content()
@@ -369,9 +395,7 @@ fn assert_text_dimmed_in_area(buffer: &Buffer, area: Rect, expected: &str, dimme
     let expected_width = expected.len() as u16;
 
     for y in area.y..area.y + area.height {
-        let row = (area.x..area.x + area.width)
-            .map(|x| buffer[(x, y)].symbol())
-            .collect::<String>();
+        let row = text_row_in_area(buffer, area, y);
         if let Some(offset) = row.find(expected) {
             let start = area.x + offset as u16;
             for x in start..start + expected_width {
@@ -386,6 +410,19 @@ fn assert_text_dimmed_in_area(buffer: &Buffer, area: Rect, expected: &str, dimme
     }
 
     panic!("missing `{expected}` in scoped render area");
+}
+
+fn text_in_area(buffer: &Buffer, area: Rect) -> String {
+    (area.y..area.y + area.height)
+        .map(|y| text_row_in_area(buffer, area, y))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn text_row_in_area(buffer: &Buffer, area: Rect, y: u16) -> String {
+    (area.x..area.x + area.width)
+        .map(|x| buffer[(x, y)].symbol())
+        .collect()
 }
 
 fn skill_list_inner_area(area: Rect) -> Rect {
