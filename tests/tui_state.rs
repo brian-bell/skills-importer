@@ -114,6 +114,30 @@ fn selected_skill_detail_projects_core_status_fields() {
 }
 
 #[test]
+fn visible_skill_rows_project_enablement_in_visible_order() {
+    let state = AppState::new(inventory([
+        skill_with_enablement("disabled", AgentEnablement::Neither),
+        skill_with_enablement("claude", AgentEnablement::ClaudeCode),
+        skill_with_enablement("codex", AgentEnablement::Codex),
+        skill_with_enablement("both", AgentEnablement::Both),
+    ]));
+
+    assert_eq!(
+        state
+            .visible_skills()
+            .iter()
+            .map(|skill| skill.enablement)
+            .collect::<Vec<_>>(),
+        [
+            AgentEnablement::Neither,
+            AgentEnablement::ClaudeCode,
+            AgentEnablement::Codex,
+            AgentEnablement::Both,
+        ]
+    );
+}
+
+#[test]
 fn active_enablement_target_changes_hints_without_changing_inventory_or_selection() {
     let mut state = AppState::new(inventory([
         skill("alpha", "First", SkillSource::Canonical),
@@ -419,6 +443,12 @@ fn skill(name: &str, description: &str, source: SkillSource) -> SkillEntry {
             codex: AgentEntryStatus::Missing,
         },
     }
+}
+
+fn skill_with_enablement(name: &str, enablement: AgentEnablement) -> SkillEntry {
+    let mut entry = skill(name, "Skill", SkillSource::Canonical);
+    entry.enablement = enablement;
+    entry
 }
 
 fn selected_name(state: &AppState) -> Option<String> {
