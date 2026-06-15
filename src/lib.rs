@@ -35,6 +35,7 @@ pub struct SkillEntry {
     pub name: String,
     pub description: Option<String>,
     pub source: SkillSource,
+    pub promoted: bool,
     pub enablement: AgentEnablement,
     pub agent_entries: AgentEntries,
 }
@@ -288,6 +289,7 @@ pub struct JsonSkillEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub source: JsonSkillSource,
+    pub promoted: bool,
     pub enablement: JsonAgentEnablement,
     pub agent_entries: JsonAgentEntries,
 }
@@ -328,6 +330,7 @@ struct SkillDraft {
     name: String,
     description: Option<String>,
     source: SkillSource,
+    promoted: bool,
     claude_code_status: AgentEntryStatus,
     codex_status: AgentEntryStatus,
 }
@@ -601,6 +604,7 @@ pub fn discover_skills(roots: &DiscoveryRoots) -> io::Result<SkillInventory> {
                 name: skill.name,
                 description: skill.description,
                 source: skill.source,
+                promoted: skill.promoted,
                 enablement: AgentEnablement::from_statuses(
                     skill.claude_code_status,
                     skill.codex_status,
@@ -2116,6 +2120,7 @@ pub fn inventory_to_json(inventory: &SkillInventory) -> JsonInventory {
                 name: skill.name.clone(),
                 description: skill.description.clone(),
                 source: skill.source.into(),
+                promoted: skill.promoted,
                 enablement: JsonAgentEnablement {
                     claude_code: skill.agent_entries.claude_code.is_enabled(),
                     codex: skill.agent_entries.codex.is_enabled(),
@@ -2146,11 +2151,25 @@ fn discover_skill_collection(
         }
 
         if let Some(metadata) = read_skill_metadata(&path)? {
-            merge_skill(skills, metadata, source);
+            let promoted = if source == SkillSource::Imported {
+                read_optional_import_promoted(&path)?
+            } else {
+                false
+            };
+            merge_skill(skills, metadata, source, promoted);
         }
     }
 
     Ok(())
+}
+
+fn read_optional_import_promoted(skill_dir: &Path) -> io::Result<bool> {
+    let manifest_path = skill_dir.join("import.json");
+    if !manifest_path.exists() {
+        return Ok(false);
+    }
+
+    read_import_manifest(&manifest_path).map(|manifest| manifest.promoted)
 }
 
 fn collection_entry_is_skill_dir(path: &Path) -> io::Result<bool> {
@@ -2199,6 +2218,7 @@ fn discover_agent_root(
                 name: metadata.name,
                 description: metadata.description,
                 source: SkillSource::AgentOnly,
+                promoted: false,
                 claude_code_status: AgentEntryStatus::Missing,
                 codex_status: AgentEntryStatus::Missing,
             });
@@ -2266,10 +2286,12 @@ fn merge_skill(
     skills: &mut BTreeMap<String, SkillDraft>,
     metadata: SkillMetadata,
     source: SkillSource,
+    promoted: bool,
 ) {
     skills
         .entry(metadata.name.clone())
         .and_modify(|skill| {
+            skill.promoted |= promoted;
             if source_precedence(source) < source_precedence(skill.source) {
                 skill.source = source;
             }
@@ -2281,6 +2303,7 @@ fn merge_skill(
             name: metadata.name,
             description: metadata.description,
             source,
+            promoted,
             claude_code_status: AgentEntryStatus::Missing,
             codex_status: AgentEntryStatus::Missing,
         });

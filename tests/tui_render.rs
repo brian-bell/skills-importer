@@ -3,7 +3,7 @@ use ratatui::{
     backend::TestBackend,
     buffer::Buffer,
     layout::{Constraint, Direction, Layout, Rect},
-    style::Modifier,
+    style::{Color, Modifier},
     widgets::{Block, Borders},
 };
 use skill_importer::{
@@ -46,6 +46,37 @@ fn main_screen_renders_user_visible_sections() {
     ] {
         assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
     }
+}
+
+#[test]
+fn promoted_skill_row_marker_and_name_render_yellow_when_unselected() {
+    let mut promoted = skill("promoted", "Promoted skill", SkillSource::Canonical);
+    promoted.promoted = true;
+    let state = AppState::new(inventory(vec![
+        skill("alpha", "First skill", SkillSource::Canonical),
+        promoted,
+    ]));
+
+    let buffer = render_buffer(&state, 90, 24);
+
+    assert_row_fg(&buffer, "  promoted", Color::Yellow);
+    assert_skill_list_text_dimmed(&buffer, "  promoted", true);
+    assert_row_fg(&buffer, "> alpha", Color::Reset);
+}
+
+#[test]
+fn promoted_skill_row_marker_and_name_render_yellow_when_selected() {
+    let mut promoted = skill("promoted", "Promoted skill", SkillSource::Canonical);
+    promoted.promoted = true;
+    let mut state = AppState::new(inventory(vec![
+        skill("alpha", "First skill", SkillSource::Canonical),
+        promoted,
+    ]));
+    state.reduce(AppAction::MoveSelection(SelectionDelta::Next));
+
+    let buffer = render_buffer(&state, 90, 24);
+
+    assert_row_fg(&buffer, "> promoted", Color::Yellow);
 }
 
 #[test]
@@ -248,6 +279,39 @@ fn render_buffer(state: &AppState, width: u16, height: u16) -> Buffer {
     terminal.backend().buffer().clone()
 }
 
+fn assert_row_fg(buffer: &Buffer, row_text: &str, expected_fg: Color) {
+    let (x, y) = find_row_text(buffer, row_text);
+    for offset in 0..row_text.chars().count() as u16 {
+        let cell = &buffer[(x + offset, y)];
+        assert_eq!(
+            cell.fg, expected_fg,
+            "foreground mismatch for `{row_text}` at offset {offset}"
+        );
+    }
+}
+
+fn find_row_text(buffer: &Buffer, row_text: &str) -> (u16, u16) {
+    for y in 0..buffer.area.height {
+        let line = (0..buffer.area.width)
+            .map(|x| buffer[(x, y)].symbol())
+            .collect::<String>();
+        if let Some(byte_start) = line.find(row_text) {
+            let x = line[..byte_start].chars().count() as u16;
+            return (x, y);
+        }
+    }
+
+    let text = (0..buffer.area.height)
+        .map(|y| {
+            (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    panic!("missing `{row_text}` in:\n{text}");
+}
+
 fn assert_skill_list_text_dimmed(buffer: &Buffer, expected: &str, dimmed: bool) {
     let area = skill_list_inner_area(*buffer.area());
     assert_text_dimmed_in_area(buffer, area, expected, dimmed);
@@ -322,6 +386,7 @@ fn skill(name: &str, description: &str, source: SkillSource) -> SkillEntry {
         name: name.to_string(),
         description: Some(description.to_string()),
         source,
+        promoted: false,
         enablement: AgentEnablement::Neither,
         agent_entries: AgentEntries {
             claude_code: AgentEntryStatus::Missing,

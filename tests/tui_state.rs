@@ -280,6 +280,40 @@ fn selected_skill_detail_projects_core_status_fields() {
 }
 
 #[test]
+fn visible_skills_project_promoted_status_from_inventory() {
+    let mut promoted_canonical = skill(
+        "promoted-canonical",
+        "Canonical after promotion",
+        SkillSource::Canonical,
+    );
+    promoted_canonical.promoted = true;
+    let imported_unpromoted = skill("imported", "Imported only", SkillSource::Imported);
+    let canonical_unpromoted = skill("canonical", "Canonical only", SkillSource::Canonical);
+    let agent_only = skill("agent-only", "Agent only", SkillSource::AgentOnly);
+
+    let state = AppState::new(inventory([
+        promoted_canonical,
+        imported_unpromoted,
+        canonical_unpromoted,
+        agent_only,
+    ]));
+
+    assert_eq!(
+        state
+            .visible_skills()
+            .iter()
+            .map(|skill| (skill.name.as_str(), skill.promoted))
+            .collect::<Vec<_>>(),
+        [
+            ("promoted-canonical", true),
+            ("imported", false),
+            ("canonical", false),
+            ("agent-only", false),
+        ]
+    );
+}
+
+#[test]
 fn visible_skill_rows_project_enablement_in_visible_order() {
     let state = AppState::new(inventory([
         skill_with_enablement("disabled", AgentEnablement::Neither),
@@ -603,6 +637,7 @@ fn skill(name: &str, description: &str, source: SkillSource) -> SkillEntry {
         name: name.to_string(),
         description: Some(description.to_string()),
         source,
+        promoted: false,
         enablement: AgentEnablement::Neither,
         agent_entries: AgentEntries {
             claude_code: AgentEntryStatus::Missing,

@@ -1,7 +1,7 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
 };
@@ -78,14 +78,15 @@ fn render_main(frame: &mut Frame<'_>, state: &AppState, area: Rect) {
             .map(|skill| {
                 let marker = if skill.selected { "> " } else { "  " };
                 let text = format!("{marker}{}", skill.name);
-                if skill.enablement == AgentEnablement::Neither {
-                    ListItem::new(Line::from(Span::styled(
-                        text,
-                        Style::default().add_modifier(Modifier::DIM),
-                    )))
+                let mut style = if skill.promoted {
+                    Style::default().fg(Color::Yellow)
                 } else {
-                    ListItem::new(text)
+                    Style::default()
+                };
+                if skill.enablement == AgentEnablement::Neither {
+                    style = style.add_modifier(Modifier::DIM);
                 }
+                ListItem::new(Line::from(Span::styled(text, style)))
             })
             .collect()
     };
