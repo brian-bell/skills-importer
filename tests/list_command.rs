@@ -28,6 +28,8 @@ fn list_command_outputs_discovered_inventory_as_json() {
     unix_fs::symlink(&canonical, claude_root.join("checkout-helper")).expect("claude symlink");
 
     write_skill(&imports_root, "draft-helper", "Imported but not enabled.");
+    let promoted_import = write_skill(&imports_root, "promoted-helper", "Promoted import.");
+    write_import_manifest(&promoted_import, true);
     let imported_enabled = write_skill(
         &imports_root,
         "imported-enabled",
@@ -79,7 +81,7 @@ fn list_command_outputs_discovered_inventory_as_json() {
 
     let json: Value = serde_json::from_slice(&output.stdout).expect("valid json output");
     let skills = json["skills"].as_array().expect("skills array");
-    assert_eq!(skills.len(), 6, "skills: {skills:?}");
+    assert_eq!(skills.len(), 7, "skills: {skills:?}");
 
     let checkout_helper = find_skill(skills, "checkout-helper");
     assert_eq!(
@@ -100,6 +102,10 @@ fn list_command_outputs_discovered_inventory_as_json() {
     assert_eq!(draft_helper["promoted"], false);
     assert_eq!(draft_helper["enablement"]["claude_code"], false);
     assert_eq!(draft_helper["enablement"]["codex"], false);
+
+    let promoted_helper = find_skill(skills, "promoted-helper");
+    assert_eq!(promoted_helper["source"], "imported");
+    assert_eq!(promoted_helper["promoted"], true);
 
     let imported_enabled = find_skill(skills, "imported-enabled");
     assert_eq!(imported_enabled["source"], "imported");
@@ -527,6 +533,22 @@ description: {description}
     )
     .expect("skill file");
     skill_dir
+}
+
+fn write_import_manifest(skill_dir: &std::path::Path, promoted: bool) {
+    fs::write(
+        skill_dir.join("import.json"),
+        format!(
+            r#"{{
+  "source_type": "local_path",
+  "source_location": "/tmp/source",
+  "imported_at": 1,
+  "content_hash": "abc123",
+  "promoted": {promoted}
+}}"#
+        ),
+    )
+    .expect("import manifest");
 }
 
 fn loopback_skill_importer_command() -> Command {
