@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
 };
 
 use crate::AgentEnablement;
@@ -71,6 +71,7 @@ fn render_main(frame: &mut Frame<'_>, state: &AppState, area: Rect) {
         .split(area);
 
     let rows = state.visible_skills();
+    let selected_index = rows.iter().position(|row| row.selected);
     let items = if rows.is_empty() {
         vec![ListItem::new("No skills match the filter")]
     } else {
@@ -90,10 +91,14 @@ fn render_main(frame: &mut Frame<'_>, state: &AppState, area: Rect) {
             })
             .collect()
     };
-    frame.render_widget(
-        List::new(items).block(Block::default().title("Skill list").borders(Borders::ALL)),
-        columns[0],
-    );
+    let list = List::new(items).block(Block::default().title("Skill list").borders(Borders::ALL));
+    if rows.is_empty() {
+        frame.render_widget(list, columns[0]);
+    } else {
+        let mut list_state = ListState::default();
+        list_state.select(selected_index);
+        frame.render_stateful_widget(list, columns[0], &mut list_state);
+    }
 
     let detail = if let Some(detail) = state.selected_detail() {
         vec![
