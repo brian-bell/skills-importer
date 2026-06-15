@@ -15,7 +15,6 @@ pub struct AppState {
     inventory: SkillInventory,
     visible_indices: Vec<usize>,
     selected_visible: Option<usize>,
-    active_target: SkillAgent,
     filter: String,
     source_filter: SourceFilter,
     latest_result: Option<AppOperationResult>,
@@ -84,17 +83,12 @@ pub enum SourceFilter {
     Imported,
 }
 
-const DEFAULT_ACTIVE_TARGET: SkillAgent = SkillAgent::Codex;
-
 impl AppState {
     pub fn new(inventory: SkillInventory) -> Self {
         let mut state = Self {
             inventory,
             visible_indices: Vec::new(),
             selected_visible: None,
-            // Codex is the default because this TUI is primarily launched from
-            // Codex skill workflows; the target remains explicit and switchable.
-            active_target: DEFAULT_ACTIVE_TARGET,
             filter: String::new(),
             source_filter: SourceFilter::All,
             latest_result: None,
@@ -130,7 +124,7 @@ impl AppState {
                 self.recompute_visible();
             }
             AppAction::MoveSelection(delta) => self.move_selection(delta),
-            AppAction::SwitchTarget(target) => self.active_target = target,
+            AppAction::ToggleSelectedForAgent(agent) => self.toggle_selected_for_agent(agent),
             AppAction::OperationFinished(result) => self.latest_result = Some(result),
             AppAction::RepositorySelectionLoaded(selection) => {
                 self.latest_result = None;
@@ -178,22 +172,6 @@ impl AppState {
                 self.prompt_text.pop();
             }
             AppAction::SubmitPrompt => self.submit_prompt(),
-            AppAction::RequestEnableSelected => {
-                if let Some(skill) = self.selected_skill() {
-                    self.pending_request = Some(AppOperationRequest::EnableSkill {
-                        skill_name: skill.name.clone(),
-                        agent: self.active_target,
-                    });
-                }
-            }
-            AppAction::RequestDisableSelected => {
-                if let Some(skill) = self.selected_skill() {
-                    self.pending_request = Some(AppOperationRequest::DisableSkill {
-                        skill_name: skill.name.clone(),
-                        agent: self.active_target,
-                    });
-                }
-            }
             AppAction::ConfirmPending => self.confirm_pending(),
             AppAction::ClearPendingRequest => self.pending_request = None,
         }
@@ -253,14 +231,12 @@ impl AppState {
         match &self.mode {
             AppInteractionMode::Main => vec![
                 "j/k move".to_string(),
-                format!("e enable {}", agent_label(self.active_target)),
-                format!("d disable {}", agent_label(self.active_target)),
+                self.toggle_hint(SkillAgent::ClaudeCode),
+                self.toggle_hint(SkillAgent::Codex),
                 format!(
                     "i toggle source: {}",
                     source_filter_label(self.source_filter)
                 ),
-                "c Claude".to_string(),
-                "x Codex".to_string(),
                 "p promote".to_string(),
                 "r delete".to_string(),
                 "u URL".to_string(),
@@ -302,10 +278,6 @@ impl AppState {
                     success: false,
                 },
             })
-    }
-
-    pub fn active_target(&self) -> SkillAgent {
-        self.active_target
     }
 
     pub fn filter(&self) -> &str {
@@ -399,6 +371,33 @@ impl AppState {
             SelectionDelta::Previous => selected.saturating_sub(1),
             SelectionDelta::Next => (selected + 1).min(self.visible_indices.len() - 1),
         });
+    }
+
+    fn toggle_selected_for_agent(&mut self, agent: SkillAgent) {
+        let Some(skill) = self.selected_skill() else {
+            return;
+        };
+        let skill_name = skill.name.clone();
+        self.pending_request = Some(if skill_enabled_for_agent(skill, agent) {
+            AppOperationRequest::DisableSkill { skill_name, agent }
+        } else {
+            AppOperationRequest::EnableSkill { skill_name, agent }
+        });
+    }
+
+    fn toggle_hint(&self, agent: SkillAgent) -> String {
+        let key = match agent {
+            SkillAgent::ClaudeCode => "c",
+            SkillAgent::Codex => "x",
+        };
+        let agent_name = agent_label(agent);
+        match self.selected_skill() {
+            Some(skill) if skill_enabled_for_agent(skill, agent) => {
+                format!("{key} disable {agent_name}")
+            }
+            Some(_) => format!("{key} enable {agent_name}"),
+            None => format!("{key} {agent_name}"),
+        }
     }
 
     fn move_repository_candidate(&mut self, delta: SelectionDelta) {
@@ -610,6 +609,20 @@ fn skill_matches_source_filter(skill: &SkillEntry, source_filter: SourceFilter) 
         SourceFilter::All => true,
         SourceFilter::Imported => skill.source == SkillSource::Imported,
     }
+}
+
+fn skill_enabled_for_agent(skill: &SkillEntry, agent: SkillAgent) -> bool {
+    let status = match agent {
+        SkillAgent::ClaudeCode => skill.agent_entries.claude_code,
+        SkillAgent::Codex => skill.agent_entries.codex,
+    };
+    matches!(
+        status,
+        AgentEntryStatus::SkillDirectory
+            | AgentEntryStatus::CanonicalSymlink
+            | AgentEntryStatus::ImportedSymlink
+            | AgentEntryStatus::ExternalSymlink
+    )
 }
 
 pub fn source_label(source: SkillSource) -> &'static str {

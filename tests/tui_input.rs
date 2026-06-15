@@ -22,11 +22,11 @@ fn main_mode_keys_map_to_navigation_target_filter_and_quit() {
     );
     assert_eq!(
         action_for_input(&mode, AppInput::Char('c')),
-        InputOutcome::Action(AppAction::SwitchTarget(SkillAgent::ClaudeCode))
+        InputOutcome::Action(AppAction::ToggleSelectedForAgent(SkillAgent::ClaudeCode))
     );
     assert_eq!(
         action_for_input(&mode, AppInput::Char('x')),
-        InputOutcome::Action(AppAction::SwitchTarget(SkillAgent::Codex))
+        InputOutcome::Action(AppAction::ToggleSelectedForAgent(SkillAgent::Codex))
     );
     assert_eq!(
         action_for_input(&mode, AppInput::Char('m')),
@@ -51,6 +51,14 @@ fn main_mode_keys_map_to_navigation_target_filter_and_quit() {
     assert_eq!(
         action_for_input(&mode, AppInput::Char('a')),
         InputOutcome::Action(AppAction::AppendFilter('a'))
+    );
+    assert_eq!(
+        action_for_input(&mode, AppInput::Char('e')),
+        InputOutcome::Action(AppAction::AppendFilter('e'))
+    );
+    assert_eq!(
+        action_for_input(&mode, AppInput::Char('d')),
+        InputOutcome::Action(AppAction::AppendFilter('d'))
     );
     assert_eq!(
         action_for_input(&mode, AppInput::Char('q')),
