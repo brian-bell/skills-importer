@@ -245,7 +245,10 @@ impl AppState {
                 "j/k move".to_string(),
                 format!("e enable {}", agent_label(self.active_target)),
                 format!("d disable {}", agent_label(self.active_target)),
-                format!("i source {}", source_filter_label(self.source_filter)),
+                format!(
+                    "i toggle source: {}",
+                    source_filter_label(self.source_filter)
+                ),
                 "c Claude".to_string(),
                 "x Codex".to_string(),
                 "p promote".to_string(),
@@ -328,8 +331,9 @@ impl AppState {
     }
 
     pub fn update_inventory(&mut self, inventory: SkillInventory) {
+        let previous_selected_name = self.selected_skill().map(|skill| skill.name.clone());
         self.inventory = inventory;
-        self.recompute_visible();
+        self.recompute_visible_preserving(previous_selected_name);
         self.needs_refresh = false;
     }
 
@@ -339,6 +343,10 @@ impl AppState {
 
     fn recompute_visible(&mut self) {
         let previous_selected_name = self.selected_skill().map(|skill| skill.name.clone());
+        self.recompute_visible_preserving(previous_selected_name);
+    }
+
+    fn recompute_visible_preserving(&mut self, previous_selected_name: Option<String>) {
         self.visible_indices = self
             .inventory
             .skills

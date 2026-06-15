@@ -31,7 +31,7 @@ fn main_screen_renders_user_visible_sections() {
         "Active target: Claude Code",
         "Filter: (none) | Source: all | Active target: Claude Code",
         "Keyboard hints",
-        "i source all",
+        "i toggle source: all",
         "Status: enable (beta) - success: 2 actions",
         "beta",
         "Source:",
@@ -57,7 +57,7 @@ fn header_shows_imported_source_filter_when_active() {
     );
     assert!(text.contains("beta"), "missing imported row in:\n{text}");
     assert!(
-        text.contains("i source imported"),
+        text.contains("i toggle source: imported"),
         "missing source hint in:\n{text}"
     );
     assert!(
