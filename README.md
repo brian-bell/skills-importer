@@ -99,10 +99,8 @@ Important keys:
 
 ```text
 j/k or arrows  move selection
-c             target Claude Code
-x             target Codex
-e             enable selected skill for active target
-d             disable selected skill for active target
+c             toggle selected skill for Claude Code
+x             toggle selected skill for Codex
 p             confirm promotion for selected skill
 r             confirm deletion for selected import
 m             import Markdown from prompt text
