@@ -108,6 +108,10 @@ impl AppState {
     }
 
     pub fn reduce(&mut self, action: AppAction) {
+        if action_clears_previous_failure(&action) {
+            self.clear_failure_result();
+        }
+
         match action {
             AppAction::FilterChanged(filter) => {
                 self.filter = filter;
@@ -155,6 +159,7 @@ impl AppState {
                 self.complete_operation(request, result)
             }
             AppAction::BeginImportPrompt(source) => {
+                self.latest_result = None;
                 self.mode = AppInteractionMode::ImportPrompt { source };
                 self.prompt_text.clear();
             }
@@ -169,6 +174,7 @@ impl AppState {
             }
             AppAction::PromptChanged(input) => self.apply_prompt_input(&input),
             AppAction::DeletePromptChar => {
+                self.latest_result = None;
                 self.prompt_text.pop();
             }
             AppAction::SubmitPrompt => self.submit_prompt(),
@@ -482,7 +488,17 @@ impl AppState {
     }
 
     fn apply_prompt_input(&mut self, input: &str) {
+        self.latest_result = None;
         self.prompt_text.push_str(input);
+    }
+
+    fn clear_failure_result(&mut self) {
+        if matches!(
+            self.latest_result.as_ref().map(|result| &result.status),
+            Some(AppOperationStatus::Failure { .. })
+        ) {
+            self.latest_result = None;
+        }
     }
 
     fn submit_prompt(&mut self) {
@@ -526,6 +542,16 @@ impl AppState {
             });
         }
     }
+}
+
+fn action_clears_previous_failure(action: &AppAction) -> bool {
+    !matches!(
+        action,
+        AppAction::OperationFinished(_)
+            | AppAction::RepositorySelectionLoaded(_)
+            | AppAction::CompletePendingOperation(_)
+            | AppAction::CompleteOperation { .. }
+    )
 }
 
 impl SourceFilter {

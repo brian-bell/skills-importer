@@ -223,6 +223,49 @@ fn pending_request_status_takes_precedence_over_previous_result() {
 }
 
 #[test]
+fn failure_status_clears_on_next_ui_action() {
+    let mut state = AppState::new(inventory(vec![
+        skill("alpha", "First", SkillSource::Canonical),
+        skill("beta", "Second", SkillSource::Canonical),
+    ]));
+    state.reduce(AppAction::OperationFinished(AppOperationResult::failure(
+        "promote",
+        Some("alpha".to_string()),
+        "unsafe entry",
+    )));
+    assert!(render_text(&state, 80, 20).contains("failed: unsafe entry"));
+
+    state.reduce(AppAction::MoveSelection(SelectionDelta::Next));
+
+    let text = render_text(&state, 80, 20);
+    assert!(text.contains("Status: ready"));
+    assert!(!text.contains("unsafe entry"));
+}
+
+#[test]
+fn import_prompt_replaces_previous_failure_in_input_area() {
+    let mut state = AppState::new(inventory(Vec::new()));
+    state.reduce(AppAction::BeginImportPrompt(AppImportSource::Url));
+    state.reduce(AppAction::PromptChanged(
+        "https://example.test/missing.md".to_string(),
+    ));
+    state.reduce(AppAction::SubmitPrompt);
+    state.reduce(AppAction::CompletePendingOperation(Err(
+        "HTTP 404".to_string()
+    )));
+    assert!(render_text(&state, 80, 20).contains("HTTP 404"));
+
+    state.reduce(AppAction::DeletePromptChar);
+    state.reduce(AppAction::PromptChanged(
+        "https://example.test/skill.md".to_string(),
+    ));
+
+    let text = render_text(&state, 80, 20);
+    assert!(text.contains("https://example.test/skill.md"));
+    assert!(!text.contains("HTTP 404"));
+}
+
+#[test]
 fn constrained_terminal_render_does_not_panic_and_preserves_essential_labels() {
     let state = AppState::new(inventory(vec![skill(
         "alpha",
