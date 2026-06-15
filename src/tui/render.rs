@@ -6,8 +6,10 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
 };
 
+use crate::AgentEnablement;
 use crate::tui::state::{
-    AppInteractionMode, AppState, agent_label, enablement_label, entry_status_label, source_label,
+    AppInteractionMode, AppState, agent_label, enablement_label, entry_status_label,
+    source_filter_label, source_label,
 };
 
 pub fn render_app(frame: &mut Frame<'_>, state: &AppState) {
@@ -47,12 +49,13 @@ pub fn render_app(frame: &mut Frame<'_>, state: &AppState) {
 
 fn render_header(frame: &mut Frame<'_>, state: &AppState, area: Rect) {
     let text = format!(
-        "Skill Importer TUI | Filter: {} | Active target: {}",
+        "Skill Importer TUI | Filter: {} | Source: {} | Active target: {}",
         if state.filter().is_empty() {
             "(none)"
         } else {
             state.filter()
         },
+        source_filter_label(state.source_filter()),
         agent_label(state.active_target())
     );
     frame.render_widget(
@@ -74,15 +77,16 @@ fn render_main(frame: &mut Frame<'_>, state: &AppState, area: Rect) {
         rows.iter()
             .map(|skill| {
                 let marker = if skill.selected { "> " } else { "  " };
-                let style = if skill.promoted {
+                let text = format!("{marker}{}", skill.name);
+                let mut style = if skill.promoted {
                     Style::default().fg(Color::Yellow)
                 } else {
                     Style::default()
                 };
-                ListItem::new(Line::from(vec![
-                    Span::styled(marker, style),
-                    Span::styled(skill.name.clone(), style),
-                ]))
+                if skill.enablement == AgentEnablement::Neither {
+                    style = style.add_modifier(Modifier::DIM);
+                }
+                ListItem::new(Line::from(Span::styled(text, style)))
             })
             .collect()
     };

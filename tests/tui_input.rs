@@ -45,6 +45,10 @@ fn main_mode_keys_map_to_navigation_target_filter_and_quit() {
         InputOutcome::Action(AppAction::BeginImportPrompt(AppImportSource::Repository))
     );
     assert_eq!(
+        action_for_input(&mode, AppInput::Char('i')),
+        InputOutcome::Action(AppAction::ToggleSourceFilter)
+    );
+    assert_eq!(
         action_for_input(&mode, AppInput::Char('a')),
         InputOutcome::Action(AppAction::AppendFilter('a'))
     );
@@ -70,6 +74,10 @@ fn escape_leaves_prompt_before_quit_and_prompt_text_maps_to_request() {
     assert_eq!(
         action_for_input(state.mode(), AppInput::Backspace),
         InputOutcome::Action(AppAction::DeletePromptChar)
+    );
+    assert_eq!(
+        action_for_input(state.mode(), AppInput::Char('i')),
+        InputOutcome::Action(AppAction::PromptChanged("i".to_string()))
     );
 
     state.reduce(AppAction::PromptChanged(
@@ -130,6 +138,10 @@ fn repository_selection_keys_move_confirm_cancel_and_ignore_text() {
     );
     assert_eq!(
         action_for_input(&mode, AppInput::Char('x')),
+        InputOutcome::Ignored
+    );
+    assert_eq!(
+        action_for_input(&mode, AppInput::Char('i')),
         InputOutcome::Ignored
     );
 }

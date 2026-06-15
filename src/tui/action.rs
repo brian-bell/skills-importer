@@ -7,6 +7,7 @@ pub enum AppAction {
     FilterChanged(String),
     AppendFilter(char),
     DeleteFilterChar,
+    ToggleSourceFilter,
     MoveSelection(SelectionDelta),
     SwitchTarget(SkillAgent),
     OperationFinished(AppOperationResult),
@@ -154,6 +155,7 @@ pub fn action_for_input(
             AppInput::Char('g') => {
                 InputOutcome::Action(AppAction::BeginImportPrompt(AppImportSource::Repository))
             }
+            AppInput::Char('i') => InputOutcome::Action(AppAction::ToggleSourceFilter),
             AppInput::Char('c') => {
                 InputOutcome::Action(AppAction::SwitchTarget(crate::SkillAgent::ClaudeCode))
             }

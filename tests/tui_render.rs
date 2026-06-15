@@ -1,4 +1,11 @@
-use ratatui::{Terminal, backend::TestBackend, buffer::Buffer, style::Color};
+use ratatui::{
+    Terminal,
+    backend::TestBackend,
+    buffer::Buffer,
+    layout::{Constraint, Direction, Layout, Rect},
+    style::{Color, Modifier},
+    widgets::{Block, Borders},
+};
 use skill_importer::{
     AgentEnablement, AgentEntries, AgentEntryStatus, RepositorySkillCandidate, SkillAgent,
     SkillEntry, SkillInventory, SkillSource,
@@ -22,14 +29,16 @@ fn main_screen_renders_user_visible_sections() {
         2,
     )));
 
-    let text = render_text(&state, 90, 24);
+    let text = render_text(&state, 140, 24);
 
     for expected in [
         "Skill Importer TUI",
         "Skill list",
         "Selected detail",
         "Active target: Claude Code",
+        "Filter: (none) | Source: all | Active target: Claude Code",
         "Keyboard hints",
+        "i toggle source: all",
         "Status: enable (beta) - success: 2 actions",
         "beta",
         "Source:",
@@ -51,6 +60,7 @@ fn promoted_skill_row_marker_and_name_render_yellow_when_unselected() {
     let buffer = render_buffer(&state, 90, 24);
 
     assert_row_fg(&buffer, "  promoted", Color::Yellow);
+    assert_skill_list_text_dimmed(&buffer, "  promoted", true);
     assert_row_fg(&buffer, "> alpha", Color::Reset);
 }
 
@@ -70,6 +80,31 @@ fn promoted_skill_row_marker_and_name_render_yellow_when_selected() {
 }
 
 #[test]
+fn header_shows_imported_source_filter_when_active() {
+    let mut state = AppState::new(inventory(vec![
+        skill("alpha", "First skill", SkillSource::Canonical),
+        skill("beta", "Second skill", SkillSource::Imported),
+    ]));
+    state.reduce(AppAction::ToggleSourceFilter);
+
+    let text = render_text(&state, 90, 24);
+
+    assert!(
+        text.contains("Filter: (none) | Source: imported | Active target: Codex"),
+        "missing source scope in:\n{text}"
+    );
+    assert!(text.contains("beta"), "missing imported row in:\n{text}");
+    assert!(
+        text.contains("i toggle source: imported"),
+        "missing source hint in:\n{text}"
+    );
+    assert!(
+        !text.contains("> alpha") && !text.contains("  alpha"),
+        "canonical row should be filtered from list:\n{text}"
+    );
+}
+
+#[test]
 fn repository_selection_render_shows_candidates_and_confirm_cancel_hints() {
     let mut state = AppState::new(inventory(Vec::new()));
     state.reduce(AppAction::RepositorySelectionLoaded(
@@ -83,7 +118,12 @@ fn repository_selection_render_shows_candidates_and_confirm_cancel_hints() {
     ));
     state.reduce(AppAction::ToggleRepositoryCandidate);
 
-    let text = render_text(&state, 90, 20);
+    let buffer = render_buffer(&state, 90, 20);
+    let text = buffer
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
 
     for expected in [
         "Repository selection",
@@ -98,6 +138,8 @@ fn repository_selection_render_shows_candidates_and_confirm_cancel_hints() {
     ] {
         assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
     }
+    assert_repository_selection_text_dimmed(&buffer, "> [x] repo-alpha", false);
+    assert_repository_selection_text_dimmed(&buffer, "  [ ] repo-beta", false);
 }
 
 #[test]
@@ -194,6 +236,32 @@ fn constrained_terminal_render_does_not_panic_and_preserves_essential_labels() {
     assert!(text.contains("Status"));
 }
 
+#[test]
+fn disabled_skill_rows_are_dimmed_in_skill_list() {
+    let disabled_selected = AppState::new(inventory(vec![
+        skill_with_enablement("disabled", AgentEnablement::Neither),
+        skill_with_enablement("claude", AgentEnablement::ClaudeCode),
+        skill_with_enablement("enabled", AgentEnablement::Codex),
+        skill_with_enablement("both", AgentEnablement::Both),
+    ]));
+    let buffer = render_buffer(&disabled_selected, 90, 24);
+    assert_skill_list_text_dimmed(&buffer, "> disabled", true);
+    assert_skill_list_text_dimmed(&buffer, "  claude", false);
+    assert_skill_list_text_dimmed(&buffer, "  enabled", false);
+    assert_skill_list_text_dimmed(&buffer, "  both", false);
+
+    let mut enabled_selected = AppState::new(inventory(vec![
+        skill_with_enablement("disabled", AgentEnablement::Neither),
+        skill_with_enablement("claude", AgentEnablement::ClaudeCode),
+        skill_with_enablement("enabled", AgentEnablement::Codex),
+        skill_with_enablement("both", AgentEnablement::Both),
+    ]));
+    enabled_selected.reduce(AppAction::MoveSelection(SelectionDelta::Next));
+    let buffer = render_buffer(&enabled_selected, 90, 24);
+    assert_skill_list_text_dimmed(&buffer, "  disabled", true);
+    assert_skill_list_text_dimmed(&buffer, "> claude", false);
+}
+
 fn render_text(state: &AppState, width: u16, height: u16) -> String {
     render_buffer(state, width, height)
         .content()
@@ -244,6 +312,71 @@ fn find_row_text(buffer: &Buffer, row_text: &str) -> (u16, u16) {
     panic!("missing `{row_text}` in:\n{text}");
 }
 
+fn assert_skill_list_text_dimmed(buffer: &Buffer, expected: &str, dimmed: bool) {
+    let area = skill_list_inner_area(*buffer.area());
+    assert_text_dimmed_in_area(buffer, area, expected, dimmed);
+}
+
+fn assert_repository_selection_text_dimmed(buffer: &Buffer, expected: &str, dimmed: bool) {
+    let area = repository_selection_inner_area(*buffer.area());
+    assert_text_dimmed_in_area(buffer, area, expected, dimmed);
+}
+
+fn assert_text_dimmed_in_area(buffer: &Buffer, area: Rect, expected: &str, dimmed: bool) {
+    let expected_width = expected.len() as u16;
+
+    for y in area.y..area.y + area.height {
+        let row = (area.x..area.x + area.width)
+            .map(|x| buffer[(x, y)].symbol())
+            .collect::<String>();
+        if let Some(offset) = row.find(expected) {
+            let start = area.x + offset as u16;
+            for x in start..start + expected_width {
+                assert_eq!(
+                    buffer[(x, y)].modifier.contains(Modifier::DIM),
+                    dimmed,
+                    "unexpected DIM style for `{expected}` at ({x}, {y})"
+                );
+            }
+            return;
+        }
+    }
+
+    panic!("missing `{expected}` in scoped render area");
+}
+
+fn skill_list_inner_area(area: Rect) -> Rect {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(6),
+            Constraint::Length(3),
+            Constraint::Length(3),
+        ])
+        .split(area);
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
+        .split(rows[1]);
+
+    Block::default().borders(Borders::ALL).inner(columns[0])
+}
+
+fn repository_selection_inner_area(area: Rect) -> Rect {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(6),
+            Constraint::Length(3),
+            Constraint::Length(3),
+        ])
+        .split(area);
+
+    Block::default().borders(Borders::ALL).inner(rows[1])
+}
+
 fn inventory(skills: Vec<SkillEntry>) -> SkillInventory {
     SkillInventory { skills }
 }
@@ -260,6 +393,12 @@ fn skill(name: &str, description: &str, source: SkillSource) -> SkillEntry {
             codex: AgentEntryStatus::Missing,
         },
     }
+}
+
+fn skill_with_enablement(name: &str, enablement: AgentEnablement) -> SkillEntry {
+    let mut entry = skill(name, "Skill", SkillSource::Canonical);
+    entry.enablement = enablement;
+    entry
 }
 
 fn candidate(name: &str, description: &str, relative_path: &str) -> RepositorySkillCandidate {

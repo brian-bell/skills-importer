@@ -3,7 +3,7 @@ use skill_importer::{
     RepositorySkillSelection, SkillAgent, SkillEntry, SkillInventory, SkillSource,
     tui::{
         AppAction, AppImportSource, AppInteractionMode, AppOperationRequest, AppOperationResult,
-        AppState, ConfirmationOperation, SelectionDelta,
+        AppState, ConfirmationOperation, SelectionDelta, SourceFilter,
     },
 };
 
@@ -26,6 +26,7 @@ fn app_state_initializes_from_inventory() {
     assert!(state.visible_skills()[0].selected);
     assert_eq!(state.active_target(), SkillAgent::Codex);
     assert_eq!(state.filter(), "");
+    assert_eq!(state.source_filter(), SourceFilter::All);
     assert_eq!(state.latest_result(), None);
 }
 
@@ -70,6 +71,171 @@ fn filtering_matches_name_and_description_and_keeps_selection_predictable() {
     assert_eq!(selected_name(&state).as_deref(), Some("alpha"));
     state.reduce(AppAction::DeleteFilterChar);
     assert_eq!(state.filter(), "A");
+}
+
+#[test]
+fn source_filter_can_show_imported_skills_only() {
+    let mut state = AppState::new(inventory([
+        skill("alpha", "Canonical", SkillSource::Canonical),
+        skill("beta", "Imported", SkillSource::Imported),
+        skill("gamma", "Agent only", SkillSource::AgentOnly),
+    ]));
+
+    state.reduce(AppAction::ToggleSourceFilter);
+
+    assert_eq!(state.source_filter(), SourceFilter::Imported);
+    assert_eq!(visible_names(&state), ["beta"]);
+    assert_eq!(selected_name(&state).as_deref(), Some("beta"));
+}
+
+#[test]
+fn source_filter_preserves_selected_import_by_name_when_visible() {
+    let mut state = AppState::new(inventory([
+        skill("alpha", "Canonical", SkillSource::Canonical),
+        skill("beta", "Imported", SkillSource::Imported),
+        skill("gamma", "Other import", SkillSource::Imported),
+    ]));
+    state.reduce(AppAction::MoveSelection(SelectionDelta::Next));
+
+    state.reduce(AppAction::ToggleSourceFilter);
+
+    assert_eq!(visible_names(&state), ["beta", "gamma"]);
+    assert_eq!(selected_name(&state).as_deref(), Some("beta"));
+}
+
+#[test]
+fn source_filter_empty_state_has_no_selection() {
+    let mut state = AppState::new(inventory([
+        skill("alpha", "Canonical", SkillSource::Canonical),
+        skill("gamma", "Agent only", SkillSource::AgentOnly),
+    ]));
+
+    state.reduce(AppAction::ToggleSourceFilter);
+
+    assert!(state.visible_skills().is_empty());
+    assert_eq!(state.selected_detail(), None);
+}
+
+#[test]
+fn source_filter_composes_with_text_filter_and_navigation() {
+    let mut state = AppState::new(inventory([
+        skill("canonical-match", "Shared topic", SkillSource::Canonical),
+        skill("imported-match", "Shared topic", SkillSource::Imported),
+        skill("imported-other", "Different topic", SkillSource::Imported),
+        skill("agent-match", "Shared topic", SkillSource::AgentOnly),
+    ]));
+
+    state.reduce(AppAction::FilterChanged("shared".to_string()));
+    state.reduce(AppAction::ToggleSourceFilter);
+
+    assert_eq!(visible_names(&state), ["imported-match"]);
+    assert_eq!(selected_name(&state).as_deref(), Some("imported-match"));
+    state.reduce(AppAction::MoveSelection(SelectionDelta::Previous));
+    assert_eq!(selected_name(&state).as_deref(), Some("imported-match"));
+    state.reduce(AppAction::MoveSelection(SelectionDelta::Next));
+    assert_eq!(selected_name(&state).as_deref(), Some("imported-match"));
+
+    state.reduce(AppAction::ToggleSourceFilter);
+
+    assert_eq!(
+        visible_names(&state),
+        ["canonical-match", "imported-match", "agent-match"]
+    );
+    assert_eq!(selected_name(&state).as_deref(), Some("imported-match"));
+}
+
+#[test]
+fn source_filter_refresh_preserves_selected_import_by_name() {
+    let mut state = AppState::new(inventory([
+        skill("alpha", "Canonical", SkillSource::Canonical),
+        skill("beta", "Imported", SkillSource::Imported),
+        skill("gamma", "Other import", SkillSource::Imported),
+    ]));
+    state.reduce(AppAction::MoveSelection(SelectionDelta::Next));
+    state.reduce(AppAction::ToggleSourceFilter);
+
+    state.update_inventory(inventory([
+        skill("gamma", "Other import refreshed", SkillSource::Imported),
+        skill("alpha", "Canonical refreshed", SkillSource::Canonical),
+        skill("beta", "Imported refreshed", SkillSource::Imported),
+    ]));
+
+    assert_eq!(visible_names(&state), ["gamma", "beta"]);
+    assert_eq!(selected_name(&state).as_deref(), Some("beta"));
+    assert!(!state.needs_refresh());
+}
+
+#[test]
+fn source_and_text_filter_refresh_preserves_selected_import_by_name() {
+    let mut state = AppState::new(inventory([
+        skill("canonical-match", "Shared topic", SkillSource::Canonical),
+        skill("imported-match", "Shared topic", SkillSource::Imported),
+        skill("imported-other", "Shared topic", SkillSource::Imported),
+        skill("imported-skip", "Different topic", SkillSource::Imported),
+    ]));
+    state.reduce(AppAction::FilterChanged("shared".to_string()));
+    state.reduce(AppAction::ToggleSourceFilter);
+    state.reduce(AppAction::MoveSelection(SelectionDelta::Next));
+
+    state.update_inventory(inventory([
+        skill("imported-skip", "Different topic", SkillSource::Imported),
+        skill(
+            "imported-other",
+            "Shared topic refreshed",
+            SkillSource::Imported,
+        ),
+        skill(
+            "canonical-match",
+            "Shared topic refreshed",
+            SkillSource::Canonical,
+        ),
+        skill(
+            "imported-match",
+            "Shared topic refreshed",
+            SkillSource::Imported,
+        ),
+    ]));
+
+    assert_eq!(visible_names(&state), ["imported-other", "imported-match"]);
+    assert_eq!(selected_name(&state).as_deref(), Some("imported-other"));
+}
+
+#[test]
+fn source_filter_refresh_falls_back_when_selected_import_disappears() {
+    let mut state = AppState::new(inventory([
+        skill("alpha", "Canonical", SkillSource::Canonical),
+        skill("beta", "Imported", SkillSource::Imported),
+        skill("gamma", "Other import", SkillSource::Imported),
+    ]));
+    state.reduce(AppAction::MoveSelection(SelectionDelta::Next));
+    state.reduce(AppAction::ToggleSourceFilter);
+
+    state.update_inventory(inventory([
+        skill("alpha", "Canonical refreshed", SkillSource::Canonical),
+        skill("gamma", "Other import refreshed", SkillSource::Imported),
+        skill("delta", "New import", SkillSource::Imported),
+    ]));
+
+    assert_eq!(visible_names(&state), ["gamma", "delta"]);
+    assert_eq!(selected_name(&state).as_deref(), Some("gamma"));
+}
+
+#[test]
+fn source_filter_refresh_to_no_imports_clears_selection() {
+    let mut state = AppState::new(inventory([
+        skill("alpha", "Canonical", SkillSource::Canonical),
+        skill("beta", "Imported", SkillSource::Imported),
+    ]));
+    state.reduce(AppAction::MoveSelection(SelectionDelta::Next));
+    state.reduce(AppAction::ToggleSourceFilter);
+
+    state.update_inventory(inventory([
+        skill("alpha", "Canonical refreshed", SkillSource::Canonical),
+        skill("agent", "Agent only", SkillSource::AgentOnly),
+    ]));
+
+    assert!(state.visible_skills().is_empty());
+    assert_eq!(state.selected_detail(), None);
 }
 
 #[test]
@@ -143,6 +309,30 @@ fn visible_skills_project_promoted_status_from_inventory() {
             ("imported", false),
             ("canonical", false),
             ("agent-only", false),
+        ]
+    );
+}
+
+#[test]
+fn visible_skill_rows_project_enablement_in_visible_order() {
+    let state = AppState::new(inventory([
+        skill_with_enablement("disabled", AgentEnablement::Neither),
+        skill_with_enablement("claude", AgentEnablement::ClaudeCode),
+        skill_with_enablement("codex", AgentEnablement::Codex),
+        skill_with_enablement("both", AgentEnablement::Both),
+    ]));
+
+    assert_eq!(
+        state
+            .visible_skills()
+            .iter()
+            .map(|skill| skill.enablement)
+            .collect::<Vec<_>>(),
+        [
+            AgentEnablement::Neither,
+            AgentEnablement::ClaudeCode,
+            AgentEnablement::Codex,
+            AgentEnablement::Both,
         ]
     );
 }
@@ -454,6 +644,12 @@ fn skill(name: &str, description: &str, source: SkillSource) -> SkillEntry {
             codex: AgentEntryStatus::Missing,
         },
     }
+}
+
+fn skill_with_enablement(name: &str, enablement: AgentEnablement) -> SkillEntry {
+    let mut entry = skill(name, "Skill", SkillSource::Canonical);
+    entry.enablement = enablement;
+    entry
 }
 
 fn selected_name(state: &AppState) -> Option<String> {
