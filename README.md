@@ -42,10 +42,10 @@ Use the production TUI target when you want user-level agent roots instead of
 disposable development agent roots:
 
 ```bash
-make make-run-prod
+make run-prod
 ```
 
-`make make-run-prod` runs `skill-importer tui` without root overrides. It uses
+`make run-prod` runs `skill-importer tui` without root overrides. It uses
 normal CLI defaults for canonical and imported skills, while enable and disable
 actions can create or remove user-level symlinks in `~/.claude/skills` and
 `~/.agents/skills`.
