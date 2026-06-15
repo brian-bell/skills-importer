@@ -6,6 +6,7 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
 };
 
+use crate::AgentEnablement;
 use crate::tui::state::{
     AppInteractionMode, AppState, agent_label, enablement_label, entry_status_label, source_label,
 };
@@ -74,7 +75,15 @@ fn render_main(frame: &mut Frame<'_>, state: &AppState, area: Rect) {
         rows.iter()
             .map(|skill| {
                 let marker = if skill.selected { "> " } else { "  " };
-                ListItem::new(format!("{marker}{}", skill.name))
+                let text = format!("{marker}{}", skill.name);
+                if skill.enablement == AgentEnablement::Neither {
+                    ListItem::new(Line::from(Span::styled(
+                        text,
+                        Style::default().add_modifier(Modifier::DIM),
+                    )))
+                } else {
+                    ListItem::new(text)
+                }
             })
             .collect()
     };

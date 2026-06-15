@@ -1,4 +1,11 @@
-use ratatui::{Terminal, backend::TestBackend};
+use ratatui::{
+    Terminal,
+    backend::TestBackend,
+    buffer::Buffer,
+    layout::{Constraint, Direction, Layout, Rect},
+    style::Modifier,
+    widgets::{Block, Borders},
+};
 use skill_importer::{
     AgentEnablement, AgentEntries, AgentEntryStatus, RepositorySkillCandidate, SkillAgent,
     SkillEntry, SkillInventory, SkillSource,
@@ -53,7 +60,12 @@ fn repository_selection_render_shows_candidates_and_confirm_cancel_hints() {
     ));
     state.reduce(AppAction::ToggleRepositoryCandidate);
 
-    let text = render_text(&state, 90, 20);
+    let buffer = render_buffer(&state, 90, 20);
+    let text = buffer
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
 
     for expected in [
         "Repository selection",
@@ -68,6 +80,8 @@ fn repository_selection_render_shows_candidates_and_confirm_cancel_hints() {
     ] {
         assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
     }
+    assert_repository_selection_text_dimmed(&buffer, "> [x] repo-alpha", false);
+    assert_repository_selection_text_dimmed(&buffer, "  [ ] repo-beta", false);
 }
 
 #[test]
@@ -164,19 +178,112 @@ fn constrained_terminal_render_does_not_panic_and_preserves_essential_labels() {
     assert!(text.contains("Status"));
 }
 
+#[test]
+fn disabled_skill_rows_are_dimmed_in_skill_list() {
+    let disabled_selected = AppState::new(inventory(vec![
+        skill_with_enablement("disabled", AgentEnablement::Neither),
+        skill_with_enablement("claude", AgentEnablement::ClaudeCode),
+        skill_with_enablement("enabled", AgentEnablement::Codex),
+        skill_with_enablement("both", AgentEnablement::Both),
+    ]));
+    let buffer = render_buffer(&disabled_selected, 90, 24);
+    assert_skill_list_text_dimmed(&buffer, "> disabled", true);
+    assert_skill_list_text_dimmed(&buffer, "  claude", false);
+    assert_skill_list_text_dimmed(&buffer, "  enabled", false);
+    assert_skill_list_text_dimmed(&buffer, "  both", false);
+
+    let mut enabled_selected = AppState::new(inventory(vec![
+        skill_with_enablement("disabled", AgentEnablement::Neither),
+        skill_with_enablement("claude", AgentEnablement::ClaudeCode),
+        skill_with_enablement("enabled", AgentEnablement::Codex),
+        skill_with_enablement("both", AgentEnablement::Both),
+    ]));
+    enabled_selected.reduce(AppAction::MoveSelection(SelectionDelta::Next));
+    let buffer = render_buffer(&enabled_selected, 90, 24);
+    assert_skill_list_text_dimmed(&buffer, "  disabled", true);
+    assert_skill_list_text_dimmed(&buffer, "> claude", false);
+}
+
 fn render_text(state: &AppState, width: u16, height: u16) -> String {
+    render_buffer(state, width, height)
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>()
+}
+
+fn render_buffer(state: &AppState, width: u16, height: u16) -> Buffer {
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).expect("terminal");
     terminal
         .draw(|frame| render_app(frame, state))
         .expect("draw");
-    terminal
-        .backend()
-        .buffer()
-        .content()
-        .iter()
-        .map(|cell| cell.symbol())
-        .collect::<String>()
+    terminal.backend().buffer().clone()
+}
+
+fn assert_skill_list_text_dimmed(buffer: &Buffer, expected: &str, dimmed: bool) {
+    let area = skill_list_inner_area(*buffer.area());
+    assert_text_dimmed_in_area(buffer, area, expected, dimmed);
+}
+
+fn assert_repository_selection_text_dimmed(buffer: &Buffer, expected: &str, dimmed: bool) {
+    let area = repository_selection_inner_area(*buffer.area());
+    assert_text_dimmed_in_area(buffer, area, expected, dimmed);
+}
+
+fn assert_text_dimmed_in_area(buffer: &Buffer, area: Rect, expected: &str, dimmed: bool) {
+    let expected_width = expected.len() as u16;
+
+    for y in area.y..area.y + area.height {
+        let row = (area.x..area.x + area.width)
+            .map(|x| buffer[(x, y)].symbol())
+            .collect::<String>();
+        if let Some(offset) = row.find(expected) {
+            let start = area.x + offset as u16;
+            for x in start..start + expected_width {
+                assert_eq!(
+                    buffer[(x, y)].modifier.contains(Modifier::DIM),
+                    dimmed,
+                    "unexpected DIM style for `{expected}` at ({x}, {y})"
+                );
+            }
+            return;
+        }
+    }
+
+    panic!("missing `{expected}` in scoped render area");
+}
+
+fn skill_list_inner_area(area: Rect) -> Rect {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(6),
+            Constraint::Length(3),
+            Constraint::Length(3),
+        ])
+        .split(area);
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
+        .split(rows[1]);
+
+    Block::default().borders(Borders::ALL).inner(columns[0])
+}
+
+fn repository_selection_inner_area(area: Rect) -> Rect {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(6),
+            Constraint::Length(3),
+            Constraint::Length(3),
+        ])
+        .split(area);
+
+    Block::default().borders(Borders::ALL).inner(rows[1])
 }
 
 fn inventory(skills: Vec<SkillEntry>) -> SkillInventory {
@@ -194,6 +301,12 @@ fn skill(name: &str, description: &str, source: SkillSource) -> SkillEntry {
             codex: AgentEntryStatus::Missing,
         },
     }
+}
+
+fn skill_with_enablement(name: &str, enablement: AgentEnablement) -> SkillEntry {
+    let mut entry = skill(name, "Skill", SkillSource::Canonical);
+    entry.enablement = enablement;
+    entry
 }
 
 fn candidate(name: &str, description: &str, relative_path: &str) -> RepositorySkillCandidate {
