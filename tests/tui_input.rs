@@ -140,6 +140,10 @@ fn repository_selection_keys_move_confirm_cancel_and_ignore_text() {
         action_for_input(&mode, AppInput::Char('x')),
         InputOutcome::Ignored
     );
+    assert_eq!(
+        action_for_input(&mode, AppInput::Char('i')),
+        InputOutcome::Ignored
+    );
 }
 
 fn candidate(name: &str, description: &str, relative_path: &str) -> RepositorySkillCandidate {

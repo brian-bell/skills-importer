@@ -80,13 +80,40 @@ fn source_filter_can_show_imported_skills_only() {
         skill("beta", "Imported", SkillSource::Imported),
         skill("gamma", "Agent only", SkillSource::AgentOnly),
     ]));
-    state.reduce(AppAction::MoveSelection(SelectionDelta::Next));
 
     state.reduce(AppAction::ToggleSourceFilter);
 
     assert_eq!(state.source_filter(), SourceFilter::Imported);
     assert_eq!(visible_names(&state), ["beta"]);
     assert_eq!(selected_name(&state).as_deref(), Some("beta"));
+}
+
+#[test]
+fn source_filter_preserves_selected_import_by_name_when_visible() {
+    let mut state = AppState::new(inventory([
+        skill("alpha", "Canonical", SkillSource::Canonical),
+        skill("beta", "Imported", SkillSource::Imported),
+        skill("gamma", "Other import", SkillSource::Imported),
+    ]));
+    state.reduce(AppAction::MoveSelection(SelectionDelta::Next));
+
+    state.reduce(AppAction::ToggleSourceFilter);
+
+    assert_eq!(visible_names(&state), ["beta", "gamma"]);
+    assert_eq!(selected_name(&state).as_deref(), Some("beta"));
+}
+
+#[test]
+fn source_filter_empty_state_has_no_selection() {
+    let mut state = AppState::new(inventory([
+        skill("alpha", "Canonical", SkillSource::Canonical),
+        skill("gamma", "Agent only", SkillSource::AgentOnly),
+    ]));
+
+    state.reduce(AppAction::ToggleSourceFilter);
+
+    assert!(state.visible_skills().is_empty());
+    assert_eq!(state.selected_detail(), None);
 }
 
 #[test]
