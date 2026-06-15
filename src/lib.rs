@@ -626,6 +626,7 @@ pub fn discover_skills(roots: &DiscoveryRoots) -> io::Result<SkillInventory> {
     )?;
     discover_agent_root(&roots.codex_root, &roots, AgentKind::Codex, &mut skills)?;
 
+    let source_repositories = source_repositories_from_drafts(skills.values());
     let skills = skills
         .into_values()
         .map(|skill| SkillEntry {
@@ -648,7 +649,6 @@ pub fn discover_skills(roots: &DiscoveryRoots) -> io::Result<SkillInventory> {
             },
         })
         .collect::<Vec<_>>();
-    let source_repositories = source_repositories_from_skills(&skills);
 
     Ok(SkillInventory {
         skills,
@@ -2356,9 +2356,11 @@ fn merge_skill(
         .entry(metadata.name.clone())
         .and_modify(|skill| {
             skill.promoted |= import_metadata.promoted;
+            if source == SkillSource::Imported && import_metadata.source_repository.is_some() {
+                skill.source_repository = import_metadata.source_repository.clone();
+            }
             if source_precedence(source) < source_precedence(skill.source) {
                 skill.source = source;
-                skill.source_repository = import_metadata.source_repository.clone();
             } else if source == skill.source {
                 skill.source_repository = import_metadata.source_repository.clone();
             }
@@ -2377,7 +2379,9 @@ fn merge_skill(
         });
 }
 
-fn source_repositories_from_skills(skills: &[SkillEntry]) -> Vec<SourceRepositoryEntry> {
+fn source_repositories_from_drafts<'skill>(
+    skills: impl IntoIterator<Item = &'skill SkillDraft>,
+) -> Vec<SourceRepositoryEntry> {
     let mut repositories: BTreeMap<String, Vec<SourceRepositorySkill>> = BTreeMap::new();
     for skill in skills {
         let Some(source_repository) = skill.source_repository.as_ref() else {

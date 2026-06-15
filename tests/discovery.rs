@@ -341,6 +341,43 @@ fn promoted_import_metadata_survives_canonical_source_precedence() {
 }
 
 #[test]
+fn source_repository_list_survives_canonical_source_precedence() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let canonical_root = temp.path().join("canonical");
+    let imports_root = temp.path().join("imports");
+
+    write_skill(&canonical_root, "shared-skill", "Canonical description.");
+    let imported = write_skill(&imports_root, "shared-skill", "Imported description.");
+    write_repository_import_manifest(
+        &imported,
+        "https://example.test/shared.git",
+        "skills/shared-skill",
+    );
+
+    let inventory = discover_skills(&DiscoveryRoots {
+        canonical_root,
+        imports_root,
+        claude_code_root: temp.path().join("missing-claude"),
+        codex_root: temp.path().join("missing-codex"),
+    })
+    .expect("discovery succeeds");
+
+    assert_eq!(inventory.skills.len(), 1);
+    assert_eq!(inventory.skills[0].source, SkillSource::Canonical);
+    assert_eq!(inventory.skills[0].source_repository, None);
+    assert_eq!(
+        inventory.source_repositories,
+        vec![skill_importer::SourceRepositoryEntry {
+            repository: "https://example.test/shared.git".to_string(),
+            skills: vec![skill_importer::SourceRepositorySkill {
+                skill_name: "shared-skill".to_string(),
+                skill_path: "skills/shared-skill".to_string(),
+            }],
+        }]
+    );
+}
+
+#[test]
 fn repository_import_metadata_is_discovered_for_imported_skills() {
     let temp = tempfile::tempdir().expect("tempdir");
     let imports_root = temp.path().join("imports");
