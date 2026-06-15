@@ -90,12 +90,36 @@ fn repository_with_one_valid_skill_imports_directly() {
         import.manifest.source_location.as_deref(),
         Some("https://example.test/solo.git#solo-repo-skill")
     );
+    assert_eq!(
+        import.manifest.source_repository.as_ref(),
+        Some(&skill_importer::ImportSourceRepository {
+            repository: "https://example.test/solo.git".to_string(),
+            skill_path: "solo-repo-skill".to_string(),
+        })
+    );
     assert!(
         roots
             .imports_root
             .join("solo-repo-skill")
             .join("SKILL.md")
             .exists()
+    );
+    let manifest: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(
+            roots
+                .imports_root
+                .join("solo-repo-skill")
+                .join("import.json"),
+        )
+        .expect("stored manifest"),
+    )
+    .expect("manifest json");
+    assert_eq!(
+        manifest["source_repository"],
+        serde_json::json!({
+            "repository": "https://example.test/solo.git",
+            "skill_path": "solo-repo-skill"
+        })
     );
 
     let inventory = discover_skills(&roots).expect("discovery succeeds");
@@ -150,6 +174,13 @@ description: Root repository skill.
     assert_eq!(
         import.manifest.source_location.as_deref(),
         Some("https://example.test/root.git#.")
+    );
+    assert_eq!(
+        import.manifest.source_repository.as_ref(),
+        Some(&skill_importer::ImportSourceRepository {
+            repository: "https://example.test/root.git".to_string(),
+            skill_path: ".".to_string(),
+        })
     );
     assert_eq!(
         fs::read_to_string(
@@ -256,8 +287,22 @@ fn selected_repository_skills_import_as_batch_in_scan_order() {
         Some("https://example.test/many.git#repo-alpha")
     );
     assert_eq!(
+        imports[0].manifest.source_repository.as_ref(),
+        Some(&skill_importer::ImportSourceRepository {
+            repository: "https://example.test/many.git".to_string(),
+            skill_path: "repo-alpha".to_string(),
+        })
+    );
+    assert_eq!(
         imports[1].manifest.source_location.as_deref(),
         Some("https://example.test/many.git#repo-beta")
+    );
+    assert_eq!(
+        imports[1].manifest.source_repository.as_ref(),
+        Some(&skill_importer::ImportSourceRepository {
+            repository: "https://example.test/many.git".to_string(),
+            skill_path: "repo-beta".to_string(),
+        })
     );
     assert_eq!(
         fs::read_to_string(
@@ -560,6 +605,10 @@ fn repository_batch_import_json_uses_stable_snake_case_kind() {
             manifest: skill_importer::ImportManifest {
                 source_type: skill_importer::ImportSourceType::Repository,
                 source_location: Some("https://example.test/skills.git#repo-alpha".to_string()),
+                source_repository: Some(skill_importer::ImportSourceRepository {
+                    repository: "https://example.test/skills.git".to_string(),
+                    skill_path: "repo-alpha".to_string(),
+                }),
                 imported_at: 1,
                 content_hash: "sha256:abc".to_string(),
                 promoted: false,

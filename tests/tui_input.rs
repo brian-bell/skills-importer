@@ -60,7 +60,10 @@ fn main_mode_keys_map_to_navigation_target_filter_and_quit() {
 
 #[test]
 fn escape_leaves_prompt_before_quit_and_prompt_text_maps_to_request() {
-    let mut state = AppState::new(skill_importer::SkillInventory { skills: Vec::new() });
+    let mut state = AppState::new(skill_importer::SkillInventory {
+        skills: Vec::new(),
+        source_repositories: Vec::new(),
+    });
     state.reduce(AppAction::BeginImportPrompt(AppImportSource::Url));
 
     assert_eq!(

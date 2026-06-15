@@ -28,6 +28,7 @@ pub struct DiscoveryRoots {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkillInventory {
     pub skills: Vec<SkillEntry>,
+    pub source_repositories: Vec<SourceRepositoryEntry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,9 +36,22 @@ pub struct SkillEntry {
     pub name: String,
     pub description: Option<String>,
     pub source: SkillSource,
+    pub source_repository: Option<ImportSourceRepository>,
     pub promoted: bool,
     pub enablement: AgentEnablement,
     pub agent_entries: AgentEntries,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SourceRepositoryEntry {
+    pub repository: String,
+    pub skills: Vec<SourceRepositorySkill>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SourceRepositorySkill {
+    pub skill_name: String,
+    pub skill_path: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,6 +88,7 @@ pub enum AgentEnablement {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct JsonInventory {
     pub skills: Vec<JsonSkillEntry>,
+    pub source_repositories: Vec<SourceRepositoryEntry>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -188,9 +203,17 @@ pub struct ImportResult {
 pub struct ImportManifest {
     pub source_type: ImportSourceType,
     pub source_location: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_repository: Option<ImportSourceRepository>,
     pub imported_at: u64,
     pub content_hash: String,
     pub promoted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct ImportSourceRepository {
+    pub repository: String,
+    pub skill_path: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -289,6 +312,8 @@ pub struct JsonSkillEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub source: JsonSkillSource,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_repository: Option<ImportSourceRepository>,
     pub promoted: bool,
     pub enablement: JsonAgentEnablement,
     pub agent_entries: JsonAgentEntries,
@@ -330,6 +355,7 @@ struct SkillDraft {
     name: String,
     description: Option<String>,
     source: SkillSource,
+    source_repository: Option<ImportSourceRepository>,
     promoted: bool,
     claude_code_status: AgentEntryStatus,
     codex_status: AgentEntryStatus,
@@ -475,6 +501,7 @@ pub fn import_local_path_skill(
             source_path,
             ImportSourceType::LocalPath,
             source_path.to_string_lossy().into_owned(),
+            None,
         );
     }
 
@@ -493,6 +520,7 @@ pub fn import_local_path_skill(
     let manifest = ImportManifest {
         source_type: ImportSourceType::LocalPath,
         source_location: Some(source_path.to_string_lossy().into_owned()),
+        source_repository: None,
         imported_at: current_import_time()?,
         content_hash: local_source_content_hash(source_path, source_kind, &markdown)?,
         promoted: false,
@@ -562,6 +590,7 @@ fn import_markdown_content(
     let manifest = ImportManifest {
         source_type,
         source_location: source_location.map(str::to_string),
+        source_repository: None,
         imported_at: current_import_time()?,
         content_hash: content_hash(markdown),
         promoted: false,
@@ -597,24 +626,33 @@ pub fn discover_skills(roots: &DiscoveryRoots) -> io::Result<SkillInventory> {
     )?;
     discover_agent_root(&roots.codex_root, &roots, AgentKind::Codex, &mut skills)?;
 
+    let skills = skills
+        .into_values()
+        .map(|skill| SkillEntry {
+            name: skill.name,
+            description: skill.description,
+            source: skill.source,
+            source_repository: if skill.source == SkillSource::Imported {
+                skill.source_repository
+            } else {
+                None
+            },
+            promoted: skill.promoted,
+            enablement: AgentEnablement::from_statuses(
+                skill.claude_code_status,
+                skill.codex_status,
+            ),
+            agent_entries: AgentEntries {
+                claude_code: skill.claude_code_status,
+                codex: skill.codex_status,
+            },
+        })
+        .collect::<Vec<_>>();
+    let source_repositories = source_repositories_from_skills(&skills);
+
     Ok(SkillInventory {
-        skills: skills
-            .into_values()
-            .map(|skill| SkillEntry {
-                name: skill.name,
-                description: skill.description,
-                source: skill.source,
-                promoted: skill.promoted,
-                enablement: AgentEnablement::from_statuses(
-                    skill.claude_code_status,
-                    skill.codex_status,
-                ),
-                agent_entries: AgentEntries {
-                    claude_code: skill.claude_code_status,
-                    codex: skill.codex_status,
-                },
-            })
-            .collect(),
+        skills,
+        source_repositories,
     })
 }
 
@@ -1752,7 +1790,18 @@ fn import_repository_candidate(
         &source_path,
         ImportSourceType::Repository,
         source_location,
+        Some(repository_source_metadata(repository, candidate)),
     )
+}
+
+fn repository_source_metadata(
+    repository: &str,
+    candidate: &RepositorySkillCandidate,
+) -> ImportSourceRepository {
+    ImportSourceRepository {
+        repository: repository.to_string(),
+        skill_path: candidate.relative_path.clone(),
+    }
 }
 
 fn import_skill_directory(
@@ -1760,6 +1809,7 @@ fn import_skill_directory(
     source_path: &Path,
     source_type: ImportSourceType,
     source_location: String,
+    source_repository: Option<ImportSourceRepository>,
 ) -> Result<ImportResult, ImportError> {
     let skill_file_path = source_path.join("SKILL.md");
     if !skill_file_path.is_file() {
@@ -1775,6 +1825,7 @@ fn import_skill_directory(
     let manifest = ImportManifest {
         source_type,
         source_location: Some(source_location),
+        source_repository,
         imported_at: current_import_time()?,
         content_hash: directory_content_hash(source_path)?,
         promoted: false,
@@ -1872,6 +1923,7 @@ fn preflight_repository_imports(
         let manifest = ImportManifest {
             source_type: ImportSourceType::Repository,
             source_location: Some(format!("{repository}#{}", candidate.relative_path)),
+            source_repository: Some(repository_source_metadata(repository, candidate)),
             imported_at: current_import_time()?,
             content_hash: directory_content_hash(&source_path)?,
             promoted: false,
@@ -2120,6 +2172,7 @@ pub fn inventory_to_json(inventory: &SkillInventory) -> JsonInventory {
                 name: skill.name.clone(),
                 description: skill.description.clone(),
                 source: skill.source.into(),
+                source_repository: skill.source_repository.clone(),
                 promoted: skill.promoted,
                 enablement: JsonAgentEnablement {
                     claude_code: skill.agent_entries.claude_code.is_enabled(),
@@ -2131,6 +2184,7 @@ pub fn inventory_to_json(inventory: &SkillInventory) -> JsonInventory {
                 },
             })
             .collect(),
+        source_repositories: inventory.source_repositories.clone(),
     }
 }
 
@@ -2151,25 +2205,34 @@ fn discover_skill_collection(
         }
 
         if let Some(metadata) = read_skill_metadata(&path)? {
-            let promoted = if source == SkillSource::Imported {
-                read_optional_import_promoted(&path)?
+            let import_metadata = if source == SkillSource::Imported {
+                read_optional_import_metadata(&path)?
             } else {
-                false
+                ImportDiscoveryMetadata::default()
             };
-            merge_skill(skills, metadata, source, promoted);
+            merge_skill(skills, metadata, source, import_metadata);
         }
     }
 
     Ok(())
 }
 
-fn read_optional_import_promoted(skill_dir: &Path) -> io::Result<bool> {
+#[derive(Debug, Clone, Default)]
+struct ImportDiscoveryMetadata {
+    promoted: bool,
+    source_repository: Option<ImportSourceRepository>,
+}
+
+fn read_optional_import_metadata(skill_dir: &Path) -> io::Result<ImportDiscoveryMetadata> {
     let manifest_path = skill_dir.join("import.json");
     if !manifest_path.exists() {
-        return Ok(false);
+        return Ok(ImportDiscoveryMetadata::default());
     }
 
-    read_import_manifest(&manifest_path).map(|manifest| manifest.promoted)
+    read_import_manifest(&manifest_path).map(|manifest| ImportDiscoveryMetadata {
+        promoted: manifest.promoted,
+        source_repository: manifest.source_repository,
+    })
 }
 
 fn collection_entry_is_skill_dir(path: &Path) -> io::Result<bool> {
@@ -2218,6 +2281,7 @@ fn discover_agent_root(
                 name: metadata.name,
                 description: metadata.description,
                 source: SkillSource::AgentOnly,
+                source_repository: None,
                 promoted: false,
                 claude_code_status: AgentEntryStatus::Missing,
                 codex_status: AgentEntryStatus::Missing,
@@ -2286,14 +2350,17 @@ fn merge_skill(
     skills: &mut BTreeMap<String, SkillDraft>,
     metadata: SkillMetadata,
     source: SkillSource,
-    promoted: bool,
+    import_metadata: ImportDiscoveryMetadata,
 ) {
     skills
         .entry(metadata.name.clone())
         .and_modify(|skill| {
-            skill.promoted |= promoted;
+            skill.promoted |= import_metadata.promoted;
             if source_precedence(source) < source_precedence(skill.source) {
                 skill.source = source;
+                skill.source_repository = import_metadata.source_repository.clone();
+            } else if source == skill.source {
+                skill.source_repository = import_metadata.source_repository.clone();
             }
             if skill.description.is_none() {
                 skill.description = metadata.description.clone();
@@ -2303,10 +2370,39 @@ fn merge_skill(
             name: metadata.name,
             description: metadata.description,
             source,
-            promoted,
+            source_repository: import_metadata.source_repository,
+            promoted: import_metadata.promoted,
             claude_code_status: AgentEntryStatus::Missing,
             codex_status: AgentEntryStatus::Missing,
         });
+}
+
+fn source_repositories_from_skills(skills: &[SkillEntry]) -> Vec<SourceRepositoryEntry> {
+    let mut repositories: BTreeMap<String, Vec<SourceRepositorySkill>> = BTreeMap::new();
+    for skill in skills {
+        let Some(source_repository) = skill.source_repository.as_ref() else {
+            continue;
+        };
+        repositories
+            .entry(source_repository.repository.clone())
+            .or_default()
+            .push(SourceRepositorySkill {
+                skill_name: skill.name.clone(),
+                skill_path: source_repository.skill_path.clone(),
+            });
+    }
+
+    repositories
+        .into_iter()
+        .map(|(repository, mut skills)| {
+            skills.sort_by(|left, right| {
+                left.skill_name
+                    .cmp(&right.skill_name)
+                    .then_with(|| left.skill_path.cmp(&right.skill_path))
+            });
+            SourceRepositoryEntry { repository, skills }
+        })
+        .collect()
 }
 
 fn read_skill_metadata(skill_dir: &Path) -> io::Result<Option<SkillMetadata>> {
