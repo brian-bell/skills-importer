@@ -38,6 +38,18 @@ make run-list
 make run-tui
 ```
 
+Use the production TUI target when you want user-level agent roots instead of
+disposable development agent roots:
+
+```bash
+make make-run-prod
+```
+
+`make make-run-prod` runs `skill-importer tui` without root overrides. It uses
+normal CLI defaults for canonical and imported skills, while enable and disable
+actions can create or remove user-level symlinks in `~/.claude/skills` and
+`~/.agents/skills`.
+
 Override roots when needed:
 
 ```bash
@@ -71,7 +83,9 @@ All commands accept root overrides:
 
 When launched inside a skills catalog repo with `AGENTS.md` and
 `catalog/portable/`, the default canonical root is that catalog. Otherwise, the
-fallback canonical root is the current directory.
+fallback canonical root is the current directory. JSON commands without root
+overrides use the default imports root plus user-level agent roots:
+`~/.claude/skills` for Claude Code and `~/.agents/skills` for Codex.
 
 ## TUI
 

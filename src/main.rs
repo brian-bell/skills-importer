@@ -43,7 +43,18 @@ fn run_with_services(
     url_fetcher: &impl SkillUrlFetcher,
     tui_runner: &impl TuiRunner,
 ) -> Result<(), String> {
-    let command = Command::parse(args)?;
+    let defaults = RootDefaults::current_process()?;
+    run_with_services_with_defaults(args, &mut stdout, url_fetcher, tui_runner, &defaults)
+}
+
+fn run_with_services_with_defaults(
+    args: impl IntoIterator<Item = OsString>,
+    mut stdout: impl Write,
+    url_fetcher: &impl SkillUrlFetcher,
+    tui_runner: &impl TuiRunner,
+    defaults: &RootDefaults,
+) -> Result<(), String> {
+    let command = Command::parse(args, defaults)?;
     let repository_provider = UnavailableRepositoryProvider;
 
     match command {
@@ -231,21 +242,44 @@ struct RootArgs {
     codex_root: Option<PathBuf>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RootDefaults {
+    current_dir: PathBuf,
+    home: Option<OsString>,
+}
+
+impl RootDefaults {
+    fn current_process() -> Result<Self, String> {
+        Ok(Self {
+            current_dir: env::current_dir()
+                .map_err(|error| format!("failed to read current directory: {error}"))?,
+            home: env::var_os("HOME"),
+        })
+    }
+}
+
 impl Command {
-    fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Self, String> {
+    fn parse(
+        args: impl IntoIterator<Item = OsString>,
+        defaults: &RootDefaults,
+    ) -> Result<Self, String> {
         let mut args = args.into_iter();
         let Some(command) = args.next() else {
             return Err(usage());
         };
 
         match command.to_str() {
-            Some("list") => parse_list_command(args),
-            Some("import") => parse_import_command(args),
-            Some("enable") => parse_enable_disable_command(args, EnableDisableCommand::Enable),
-            Some("disable") => parse_enable_disable_command(args, EnableDisableCommand::Disable),
-            Some("promote") => parse_promote_command(args),
-            Some("delete") => parse_delete_command(args),
-            Some("tui") => parse_tui_command(args),
+            Some("list") => parse_list_command(args, defaults),
+            Some("import") => parse_import_command(args, defaults),
+            Some("enable") => {
+                parse_enable_disable_command(args, EnableDisableCommand::Enable, defaults)
+            }
+            Some("disable") => {
+                parse_enable_disable_command(args, EnableDisableCommand::Disable, defaults)
+            }
+            Some("promote") => parse_promote_command(args, defaults),
+            Some("delete") => parse_delete_command(args, defaults),
+            Some("tui") => parse_tui_command(args, defaults),
             _ => Err(format!(
                 "unknown command `{}`\n{}",
                 display_arg(command),
@@ -255,7 +289,10 @@ impl Command {
     }
 }
 
-fn parse_list_command(mut args: impl Iterator<Item = OsString>) -> Result<Command, String> {
+fn parse_list_command(
+    mut args: impl Iterator<Item = OsString>,
+    defaults: &RootDefaults,
+) -> Result<Command, String> {
     let mut saw_json = false;
     let mut roots = RootArgs::default();
 
@@ -289,19 +326,22 @@ fn parse_list_command(mut args: impl Iterator<Item = OsString>) -> Result<Comman
     }
 
     Ok(Command::List {
-        roots: roots.into_discovery_roots()?,
+        roots: roots.into_discovery_roots(defaults)?,
     })
 }
 
-fn parse_import_command(mut args: impl Iterator<Item = OsString>) -> Result<Command, String> {
+fn parse_import_command(
+    mut args: impl Iterator<Item = OsString>,
+    defaults: &RootDefaults,
+) -> Result<Command, String> {
     let Some(import_kind) = args.next() else {
         return Err(format!("import requires a kind\n{}", usage()));
     };
 
     match import_kind.to_str() {
-        Some("markdown") => parse_import_markdown_command(args),
-        Some("path") => parse_import_path_command(args),
-        Some("url") => parse_import_url_command(args),
+        Some("markdown") => parse_import_markdown_command(args, defaults),
+        Some("path") => parse_import_path_command(args, defaults),
+        Some("url") => parse_import_url_command(args, defaults),
         _ => Err(format!(
             "unknown import kind `{}`\n{}",
             display_arg(import_kind),
@@ -312,6 +352,7 @@ fn parse_import_command(mut args: impl Iterator<Item = OsString>) -> Result<Comm
 
 fn parse_import_markdown_command(
     mut args: impl Iterator<Item = OsString>,
+    defaults: &RootDefaults,
 ) -> Result<Command, String> {
     let mut saw_json = false;
     let mut roots = RootArgs::default();
@@ -350,12 +391,15 @@ fn parse_import_markdown_command(
     }
 
     Ok(Command::ImportMarkdown {
-        roots: roots.into_discovery_roots()?,
+        roots: roots.into_discovery_roots(defaults)?,
         source_location,
     })
 }
 
-fn parse_import_path_command(mut args: impl Iterator<Item = OsString>) -> Result<Command, String> {
+fn parse_import_path_command(
+    mut args: impl Iterator<Item = OsString>,
+    defaults: &RootDefaults,
+) -> Result<Command, String> {
     let mut saw_json = false;
     let mut roots = RootArgs::default();
     let mut path = None;
@@ -393,12 +437,15 @@ fn parse_import_path_command(mut args: impl Iterator<Item = OsString>) -> Result
     }
 
     Ok(Command::ImportPath {
-        roots: roots.into_discovery_roots()?,
+        roots: roots.into_discovery_roots(defaults)?,
         path: path.ok_or_else(|| "import path requires --path".to_string())?,
     })
 }
 
-fn parse_import_url_command(mut args: impl Iterator<Item = OsString>) -> Result<Command, String> {
+fn parse_import_url_command(
+    mut args: impl Iterator<Item = OsString>,
+    defaults: &RootDefaults,
+) -> Result<Command, String> {
     let mut saw_json = false;
     let mut roots = RootArgs::default();
     let mut url = None;
@@ -436,7 +483,7 @@ fn parse_import_url_command(mut args: impl Iterator<Item = OsString>) -> Result<
     }
 
     Ok(Command::ImportUrl {
-        roots: roots.into_discovery_roots()?,
+        roots: roots.into_discovery_roots(defaults)?,
         url: url.ok_or_else(|| "import url requires --url".to_string())?,
     })
 }
@@ -450,6 +497,7 @@ enum EnableDisableCommand {
 fn parse_enable_disable_command(
     mut args: impl Iterator<Item = OsString>,
     command: EnableDisableCommand,
+    defaults: &RootDefaults,
 ) -> Result<Command, String> {
     let mut saw_json = false;
     let mut roots = RootArgs::default();
@@ -498,7 +546,7 @@ fn parse_enable_disable_command(
         return Err(format!("{command_name} requires at least one --agent"));
     }
 
-    let roots = roots.into_discovery_roots()?;
+    let roots = roots.into_discovery_roots(defaults)?;
     let skill_name = skill_name.ok_or_else(|| format!("{command_name} requires --skill"))?;
     match command {
         EnableDisableCommand::Enable => Ok(Command::Enable {
@@ -524,7 +572,10 @@ fn parse_agent(value: &str) -> Result<SkillAgent, String> {
     }
 }
 
-fn parse_promote_command(mut args: impl Iterator<Item = OsString>) -> Result<Command, String> {
+fn parse_promote_command(
+    mut args: impl Iterator<Item = OsString>,
+    defaults: &RootDefaults,
+) -> Result<Command, String> {
     let mut saw_json = false;
     let mut roots = RootArgs::default();
     let mut skill_name = None;
@@ -562,12 +613,15 @@ fn parse_promote_command(mut args: impl Iterator<Item = OsString>) -> Result<Com
     }
 
     Ok(Command::Promote {
-        roots: roots.into_discovery_roots()?,
+        roots: roots.into_discovery_roots(defaults)?,
         skill_name: skill_name.ok_or_else(|| "promote requires --skill".to_string())?,
     })
 }
 
-fn parse_delete_command(mut args: impl Iterator<Item = OsString>) -> Result<Command, String> {
+fn parse_delete_command(
+    mut args: impl Iterator<Item = OsString>,
+    defaults: &RootDefaults,
+) -> Result<Command, String> {
     let mut saw_json = false;
     let mut roots = RootArgs::default();
     let mut skill_name = None;
@@ -605,12 +659,15 @@ fn parse_delete_command(mut args: impl Iterator<Item = OsString>) -> Result<Comm
     }
 
     Ok(Command::Delete {
-        roots: roots.into_discovery_roots()?,
+        roots: roots.into_discovery_roots(defaults)?,
         skill_name: skill_name.ok_or_else(|| "delete requires --skill".to_string())?,
     })
 }
 
-fn parse_tui_command(mut args: impl Iterator<Item = OsString>) -> Result<Command, String> {
+fn parse_tui_command(
+    mut args: impl Iterator<Item = OsString>,
+    defaults: &RootDefaults,
+) -> Result<Command, String> {
     let mut roots = RootArgs::default();
 
     while let Some(arg) = args.next() {
@@ -638,7 +695,7 @@ fn parse_tui_command(mut args: impl Iterator<Item = OsString>) -> Result<Command
     }
 
     Ok(Command::Tui {
-        roots: roots.into_discovery_roots()?,
+        roots: roots.into_discovery_roots(defaults)?,
     })
 }
 
@@ -651,25 +708,32 @@ fn write_json_outcome(
 }
 
 impl RootArgs {
-    fn into_discovery_roots(self) -> Result<DiscoveryRoots, String> {
-        let current_dir = env::current_dir()
-            .map_err(|error| format!("failed to read current directory: {error}"))?;
-        let home = home_dir();
-        let default_root = default_runtime_root(&current_dir);
+    fn into_discovery_roots(self, defaults: &RootDefaults) -> Result<DiscoveryRoots, String> {
+        let default_root = default_runtime_root(&defaults.current_dir);
+        let home = match (&self.claude_code_root, &self.codex_root) {
+            (Some(_), Some(_)) => None,
+            _ => Some(home_dir_from(defaults.home.clone())?),
+        };
 
         Ok(DiscoveryRoots {
             canonical_root: self
                 .canonical_root
-                .unwrap_or_else(|| default_canonical_root(&current_dir)),
+                .unwrap_or_else(|| default_canonical_root(&defaults.current_dir)),
             imports_root: self
                 .imports_root
                 .unwrap_or_else(|| default_root.join(".skill-importer").join("imports")),
-            claude_code_root: self
-                .claude_code_root
-                .unwrap_or_else(|| home.join(".claude").join("skills")),
-            codex_root: self
-                .codex_root
-                .unwrap_or_else(|| home.join(".agents").join("skills")),
+            claude_code_root: self.claude_code_root.unwrap_or_else(|| {
+                home.as_ref()
+                    .expect("home resolved when Claude Code root is defaulted")
+                    .join(".claude")
+                    .join("skills")
+            }),
+            codex_root: self.codex_root.unwrap_or_else(|| {
+                home.as_ref()
+                    .expect("home resolved when Codex root is defaulted")
+                    .join(".agents")
+                    .join("skills")
+            }),
         })
     }
 }
@@ -712,10 +776,17 @@ fn next_string(
         .ok_or_else(|| format!("{flag} requires a value"))
 }
 
-fn home_dir() -> PathBuf {
-    env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
+fn home_dir_from(home: Option<OsString>) -> Result<PathBuf, String> {
+    let home =
+        home.ok_or_else(|| "failed to resolve home directory: HOME is not set".to_string())?;
+    let home = PathBuf::from(home);
+    if !home.is_absolute() {
+        return Err(format!(
+            "failed to resolve home directory: HOME must be an absolute path, got `{}`",
+            home.display()
+        ));
+    }
+    Ok(home)
 }
 
 fn display_arg(arg: OsString) -> String {
@@ -940,6 +1011,81 @@ description: Imported from a URL through the command.
     }
 
     #[test]
+    fn tui_command_without_root_overrides_uses_user_level_agent_roots() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let catalog_repo = temp.path().join("skills-repo");
+        let catalog_root = catalog_repo.join("catalog").join("portable");
+        let home = temp.path().join("home");
+        std::fs::create_dir_all(&catalog_repo).expect("catalog repo");
+        std::fs::write(catalog_repo.join("AGENTS.md"), "# Test catalog\n").expect("agents");
+        std::fs::create_dir_all(&catalog_root).expect("catalog root");
+        let runner = RecordingTuiRunner::default();
+        let mut stdout = Vec::new();
+
+        run_with_services_with_defaults(
+            [OsString::from("tui")],
+            &mut stdout,
+            &StaticFetcher { markdown: "" },
+            &runner,
+            &RootDefaults {
+                current_dir: catalog_repo.clone(),
+                home: Some(home.clone().into_os_string()),
+            },
+        )
+        .expect("tui command routes to runner");
+
+        assert_eq!(
+            runner.roots.borrow().as_ref(),
+            Some(&DiscoveryRoots {
+                canonical_root: catalog_root,
+                imports_root: catalog_repo.join(".skill-importer").join("imports"),
+                claude_code_root: home.join(".claude").join("skills"),
+                codex_root: home.join(".agents").join("skills"),
+            })
+        );
+        assert!(stdout.is_empty(), "tui runner should own terminal output");
+    }
+
+    #[test]
+    fn root_overrides_do_not_require_home() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let canonical_root = temp.path().join("canonical");
+        let imports_root = temp.path().join("imports");
+        let claude_root = temp.path().join("claude");
+        let codex_root = temp.path().join("codex");
+
+        for home in [None, Some(OsString::from("relative-home"))] {
+            let mut stdout = Vec::new();
+            run_with_services_with_defaults(
+                [
+                    OsString::from("list"),
+                    OsString::from("--json"),
+                    OsString::from("--canonical-root"),
+                    canonical_root.clone().into_os_string(),
+                    OsString::from("--imports-root"),
+                    imports_root.clone().into_os_string(),
+                    OsString::from("--claude-code-root"),
+                    claude_root.clone().into_os_string(),
+                    OsString::from("--codex-root"),
+                    codex_root.clone().into_os_string(),
+                ],
+                &mut stdout,
+                &StaticFetcher { markdown: "" },
+                &DisabledTuiRunner,
+                &RootDefaults {
+                    current_dir: temp.path().to_path_buf(),
+                    home,
+                },
+            )
+            .expect("all root overrides should not require HOME");
+
+            let json: serde_json::Value =
+                serde_json::from_slice(&stdout).expect("valid list json output");
+            assert_eq!(json["skills"].as_array().expect("skills array").len(), 0);
+        }
+    }
+
+    #[test]
     fn default_roots_use_skills_catalog_when_launched_from_nested_directory() {
         let temp = tempfile::tempdir().expect("tempdir");
         let repo_root = temp.path();
@@ -971,6 +1117,25 @@ description: Imported from a URL through the command.
 
         assert_eq!(default_canonical_root(temp.path()), temp.path());
         assert_eq!(default_runtime_root(temp.path()), temp.path());
+    }
+
+    #[test]
+    fn home_dir_requires_home_to_be_set_and_absolute() {
+        assert_eq!(
+            home_dir_from(None).expect_err("missing HOME should fail"),
+            "failed to resolve home directory: HOME is not set"
+        );
+
+        assert_eq!(
+            home_dir_from(Some(OsString::from("relative-home")))
+                .expect_err("relative HOME should fail"),
+            "failed to resolve home directory: HOME must be an absolute path, got `relative-home`"
+        );
+
+        assert_eq!(
+            home_dir_from(Some(OsString::from("/tmp/home"))).expect("absolute HOME"),
+            PathBuf::from("/tmp/home")
+        );
     }
 
     #[derive(Default)]

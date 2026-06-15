@@ -13,7 +13,7 @@ ROOT_FLAGS := --canonical-root "$(CANONICAL_ROOT)" \
 	--claude-code-root "$(CLAUDE_CODE_ROOT)" \
 	--codex-root "$(CODEX_ROOT)"
 
-.PHONY: help build test fmt fmt-check clippy check run run-tui run-list dev-roots clean
+.PHONY: help build test fmt fmt-check clippy check run run-tui run-list make-run-prod dev-roots clean
 
 help:
 	@printf '%s\n' \
@@ -26,6 +26,7 @@ help:
 		'  make check      Run fmt-check, clippy, and test' \
 		'  make run        Run the TUI with disposable local roots' \
 		'  make run-list   Print inventory JSON with disposable local roots' \
+		'  make make-run-prod  Run the TUI with user-level agent roots' \
 		'  make clean      Remove build output and disposable local roots' \
 		'' \
 		'Override roots with SKILLS_REPO=..., CANONICAL_ROOT=..., IMPORTS_ROOT=..., CLAUDE_CODE_ROOT=..., CODEX_ROOT=...'
@@ -57,6 +58,9 @@ run-tui: dev-roots
 
 run-list: dev-roots
 	@$(CARGO) run -- list --json $(ROOT_FLAGS)
+
+make-run-prod:
+	$(CARGO) run -- tui
 
 clean:
 	$(CARGO) clean
