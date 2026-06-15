@@ -22,14 +22,16 @@ fn main_screen_renders_user_visible_sections() {
         2,
     )));
 
-    let text = render_text(&state, 90, 24);
+    let text = render_text(&state, 140, 24);
 
     for expected in [
         "Skill Importer TUI",
         "Skill list",
         "Selected detail",
         "Active target: Claude Code",
+        "Filter: (none) | Source: all | Active target: Claude Code",
         "Keyboard hints",
+        "i source all",
         "Status: enable (beta) - success: 2 actions",
         "beta",
         "Source:",
@@ -37,6 +39,31 @@ fn main_screen_renders_user_visible_sections() {
     ] {
         assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
     }
+}
+
+#[test]
+fn header_shows_imported_source_filter_when_active() {
+    let mut state = AppState::new(inventory(vec![
+        skill("alpha", "First skill", SkillSource::Canonical),
+        skill("beta", "Second skill", SkillSource::Imported),
+    ]));
+    state.reduce(AppAction::ToggleSourceFilter);
+
+    let text = render_text(&state, 90, 24);
+
+    assert!(
+        text.contains("Filter: (none) | Source: imported | Active target: Codex"),
+        "missing source scope in:\n{text}"
+    );
+    assert!(text.contains("beta"), "missing imported row in:\n{text}");
+    assert!(
+        text.contains("i source imported"),
+        "missing source hint in:\n{text}"
+    );
+    assert!(
+        !text.contains("> alpha") && !text.contains("  alpha"),
+        "canonical row should be filtered from list:\n{text}"
+    );
 }
 
 #[test]

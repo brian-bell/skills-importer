@@ -3,7 +3,7 @@ use skill_importer::{
     RepositorySkillSelection, SkillAgent, SkillEntry, SkillInventory, SkillSource,
     tui::{
         AppAction, AppImportSource, AppInteractionMode, AppOperationRequest, AppOperationResult,
-        AppState, ConfirmationOperation, SelectionDelta,
+        AppState, ConfirmationOperation, SelectionDelta, SourceFilter,
     },
 };
 
@@ -26,6 +26,7 @@ fn app_state_initializes_from_inventory() {
     assert!(state.visible_skills()[0].selected);
     assert_eq!(state.active_target(), SkillAgent::Codex);
     assert_eq!(state.filter(), "");
+    assert_eq!(state.source_filter(), SourceFilter::All);
     assert_eq!(state.latest_result(), None);
 }
 
@@ -70,6 +71,50 @@ fn filtering_matches_name_and_description_and_keeps_selection_predictable() {
     assert_eq!(selected_name(&state).as_deref(), Some("alpha"));
     state.reduce(AppAction::DeleteFilterChar);
     assert_eq!(state.filter(), "A");
+}
+
+#[test]
+fn source_filter_can_show_imported_skills_only() {
+    let mut state = AppState::new(inventory([
+        skill("alpha", "Canonical", SkillSource::Canonical),
+        skill("beta", "Imported", SkillSource::Imported),
+        skill("gamma", "Agent only", SkillSource::AgentOnly),
+    ]));
+    state.reduce(AppAction::MoveSelection(SelectionDelta::Next));
+
+    state.reduce(AppAction::ToggleSourceFilter);
+
+    assert_eq!(state.source_filter(), SourceFilter::Imported);
+    assert_eq!(visible_names(&state), ["beta"]);
+    assert_eq!(selected_name(&state).as_deref(), Some("beta"));
+}
+
+#[test]
+fn source_filter_composes_with_text_filter_and_navigation() {
+    let mut state = AppState::new(inventory([
+        skill("canonical-match", "Shared topic", SkillSource::Canonical),
+        skill("imported-match", "Shared topic", SkillSource::Imported),
+        skill("imported-other", "Different topic", SkillSource::Imported),
+        skill("agent-match", "Shared topic", SkillSource::AgentOnly),
+    ]));
+
+    state.reduce(AppAction::FilterChanged("shared".to_string()));
+    state.reduce(AppAction::ToggleSourceFilter);
+
+    assert_eq!(visible_names(&state), ["imported-match"]);
+    assert_eq!(selected_name(&state).as_deref(), Some("imported-match"));
+    state.reduce(AppAction::MoveSelection(SelectionDelta::Previous));
+    assert_eq!(selected_name(&state).as_deref(), Some("imported-match"));
+    state.reduce(AppAction::MoveSelection(SelectionDelta::Next));
+    assert_eq!(selected_name(&state).as_deref(), Some("imported-match"));
+
+    state.reduce(AppAction::ToggleSourceFilter);
+
+    assert_eq!(
+        visible_names(&state),
+        ["canonical-match", "imported-match", "agent-match"]
+    );
+    assert_eq!(selected_name(&state).as_deref(), Some("imported-match"));
 }
 
 #[test]

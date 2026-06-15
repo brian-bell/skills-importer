@@ -10,6 +10,6 @@ pub use action::{
 pub use render::render_app;
 pub use state::{
     AppInteractionMode, AppOperationResult, AppOperationStatus, AppState, CandidateView,
-    SkillDetail, SkillRow, StatusView,
+    SkillDetail, SkillRow, SourceFilter, StatusView,
 };
 pub use terminal::run_tui;

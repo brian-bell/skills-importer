@@ -7,7 +7,8 @@ use ratatui::{
 };
 
 use crate::tui::state::{
-    AppInteractionMode, AppState, agent_label, enablement_label, entry_status_label, source_label,
+    AppInteractionMode, AppState, agent_label, enablement_label, entry_status_label,
+    source_filter_label, source_label,
 };
 
 pub fn render_app(frame: &mut Frame<'_>, state: &AppState) {
@@ -47,12 +48,13 @@ pub fn render_app(frame: &mut Frame<'_>, state: &AppState) {
 
 fn render_header(frame: &mut Frame<'_>, state: &AppState, area: Rect) {
     let text = format!(
-        "Skill Importer TUI | Filter: {} | Active target: {}",
+        "Skill Importer TUI | Filter: {} | Source: {} | Active target: {}",
         if state.filter().is_empty() {
             "(none)"
         } else {
             state.filter()
         },
+        source_filter_label(state.source_filter()),
         agent_label(state.active_target())
     );
     frame.render_widget(
