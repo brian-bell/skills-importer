@@ -2,7 +2,7 @@ use std::env;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use clap::{Args, Parser, Subcommand};
+use clap::{ArgAction, Args, Parser, Subcommand};
 use skill_importer::{DiscoveryRoots, SkillAgent};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -163,15 +163,15 @@ impl ImportCommand {
 
 #[derive(Debug, Args)]
 struct JsonRootArgs {
-    #[arg(long)]
-    json: bool,
+    #[arg(long, action = ArgAction::Count)]
+    json: u8,
     #[command(flatten)]
     roots: RootArgs,
 }
 
 impl JsonRootArgs {
     fn require_json(&self, command_name: &str) -> Result<(), String> {
-        if self.json {
+        if self.json > 0 {
             Ok(())
         } else {
             Err(format!("{command_name} currently requires --json"))
@@ -183,7 +183,7 @@ impl JsonRootArgs {
 struct ImportMarkdownArgs {
     #[command(flatten)]
     json_roots: JsonRootArgs,
-    #[arg(long, value_name = "VALUE")]
+    #[arg(long, value_name = "VALUE", allow_hyphen_values = true)]
     source_location: Vec<OsString>,
 }
 
@@ -191,7 +191,7 @@ struct ImportMarkdownArgs {
 struct ImportPathArgs {
     #[command(flatten)]
     json_roots: JsonRootArgs,
-    #[arg(long, value_name = "PATH")]
+    #[arg(long, value_name = "PATH", allow_hyphen_values = true)]
     path: Vec<PathBuf>,
 }
 
@@ -199,7 +199,7 @@ struct ImportPathArgs {
 struct ImportUrlArgs {
     #[command(flatten)]
     json_roots: JsonRootArgs,
-    #[arg(long, value_name = "URL")]
+    #[arg(long, value_name = "URL", allow_hyphen_values = true)]
     url: Vec<OsString>,
 }
 
@@ -207,9 +207,9 @@ struct ImportUrlArgs {
 struct SkillAgentsArgs {
     #[command(flatten)]
     json_roots: JsonRootArgs,
-    #[arg(long, value_name = "NAME")]
+    #[arg(long, value_name = "NAME", allow_hyphen_values = true)]
     skill: Vec<OsString>,
-    #[arg(long, value_name = "claude-code|codex")]
+    #[arg(long, value_name = "claude-code|codex", allow_hyphen_values = true)]
     agent: Vec<OsString>,
 }
 
@@ -263,7 +263,7 @@ impl SkillAgentsArgs {
 struct SkillNameArgs {
     #[command(flatten)]
     json_roots: JsonRootArgs,
-    #[arg(long, value_name = "NAME")]
+    #[arg(long, value_name = "NAME", allow_hyphen_values = true)]
     skill: Vec<OsString>,
 }
 
@@ -298,13 +298,13 @@ impl SkillNameArgs {
 
 #[derive(Debug, Clone, Default, Args, PartialEq, Eq)]
 struct RootArgs {
-    #[arg(long, value_name = "PATH")]
+    #[arg(long, value_name = "PATH", allow_hyphen_values = true)]
     canonical_root: Vec<PathBuf>,
-    #[arg(long, value_name = "PATH")]
+    #[arg(long, value_name = "PATH", allow_hyphen_values = true)]
     imports_root: Vec<PathBuf>,
-    #[arg(long, value_name = "PATH")]
+    #[arg(long, value_name = "PATH", allow_hyphen_values = true)]
     claude_code_root: Vec<PathBuf>,
-    #[arg(long, value_name = "PATH")]
+    #[arg(long, value_name = "PATH", allow_hyphen_values = true)]
     codex_root: Vec<PathBuf>,
 }
 
@@ -523,6 +523,82 @@ mod tests {
                     claude_code_root: second.join("claude"),
                     codex_root: second.join("codex"),
                 },
+            }
+        );
+    }
+
+    #[test]
+    fn repeated_json_flags_are_idempotent() {
+        let temp = tempfile::tempdir().expect("tempdir");
+
+        assert_eq!(
+            parse_command(
+                [
+                    OsString::from("list"),
+                    OsString::from("--json"),
+                    OsString::from("--json"),
+                ],
+                &defaults(temp.path()),
+            )
+            .expect("repeated json parses"),
+            Command::List {
+                roots: default_roots(temp.path()),
+            }
+        );
+    }
+
+    #[test]
+    fn hyphen_prefixed_option_values_remain_supported() {
+        let temp = tempfile::tempdir().expect("tempdir");
+
+        assert_eq!(
+            parse_command(
+                [
+                    OsString::from("import"),
+                    OsString::from("path"),
+                    OsString::from("--json"),
+                    OsString::from("--path"),
+                    OsString::from("-skill.md"),
+                    OsString::from("--canonical-root"),
+                    OsString::from("-canonical"),
+                    OsString::from("--imports-root"),
+                    temp.path().join("imports").into_os_string(),
+                    OsString::from("--claude-code-root"),
+                    temp.path().join("claude").into_os_string(),
+                    OsString::from("--codex-root"),
+                    temp.path().join("codex").into_os_string(),
+                ],
+                &defaults(temp.path()),
+            )
+            .expect("hyphen-prefixed path values parse"),
+            Command::ImportPath {
+                roots: DiscoveryRoots {
+                    canonical_root: PathBuf::from("-canonical"),
+                    imports_root: temp.path().join("imports"),
+                    claude_code_root: temp.path().join("claude"),
+                    codex_root: temp.path().join("codex"),
+                },
+                path: PathBuf::from("-skill.md"),
+            }
+        );
+
+        assert_eq!(
+            parse_command(
+                [
+                    OsString::from("enable"),
+                    OsString::from("--json"),
+                    OsString::from("--skill"),
+                    OsString::from("-skill"),
+                    OsString::from("--agent"),
+                    OsString::from("codex"),
+                ],
+                &defaults(temp.path()),
+            )
+            .expect("hyphen-prefixed string values parse"),
+            Command::Enable {
+                roots: default_roots(temp.path()),
+                skill_name: "-skill".to_string(),
+                agents: vec![SkillAgent::Codex],
             }
         );
     }
