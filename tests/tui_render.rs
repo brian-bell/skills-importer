@@ -105,6 +105,25 @@ fn header_shows_imported_source_filter_when_active() {
 }
 
 #[test]
+fn selected_detail_renders_repository_source_metadata_when_present() {
+    let mut imported = skill("repo-alpha", "Repository skill", SkillSource::Imported);
+    imported.source_repository = Some(skill_importer::ImportSourceRepository {
+        repository: "https://example.test/skills.git".to_string(),
+        skill_path: "skills/repo-alpha".to_string(),
+    });
+    let state = AppState::new(inventory(vec![imported]));
+
+    let text = render_text(&state, 120, 24);
+
+    for expected in [
+        "Repository: https://example.test/skills.git",
+        "Repository path: skills/repo-alpha",
+    ] {
+        assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
+    }
+}
+
+#[test]
 fn repository_selection_render_shows_candidates_and_confirm_cancel_hints() {
     let mut state = AppState::new(inventory(Vec::new()));
     state.reduce(AppAction::RepositorySelectionLoaded(
@@ -458,7 +477,10 @@ fn repository_selection_inner_area(area: Rect) -> Rect {
 }
 
 fn inventory(skills: Vec<SkillEntry>) -> SkillInventory {
-    SkillInventory { skills }
+    SkillInventory {
+        skills,
+        source_repositories: Vec::new(),
+    }
 }
 
 fn skill(name: &str, description: &str, source: SkillSource) -> SkillEntry {
@@ -466,6 +488,7 @@ fn skill(name: &str, description: &str, source: SkillSource) -> SkillEntry {
         name: name.to_string(),
         description: Some(description.to_string()),
         source,
+        source_repository: None,
         promoted: false,
         enablement: AgentEnablement::Neither,
         agent_entries: AgentEntries {

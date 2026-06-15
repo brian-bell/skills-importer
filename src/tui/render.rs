@@ -101,7 +101,7 @@ fn render_main(frame: &mut Frame<'_>, state: &AppState, area: Rect) {
     }
 
     let detail = if let Some(detail) = state.selected_detail() {
-        vec![
+        let mut lines = vec![
             Line::from(vec![Span::raw("Name: "), Span::raw(detail.name)]),
             Line::from(vec![
                 Span::raw("Description: "),
@@ -123,7 +123,18 @@ fn render_main(frame: &mut Frame<'_>, state: &AppState, area: Rect) {
                 Span::raw("Codex: "),
                 Span::raw(entry_status_label(detail.agent_entries.codex)),
             ]),
-        ]
+        ];
+        if let Some(source_repository) = detail.source_repository {
+            lines.push(Line::from(vec![
+                Span::raw("Repository: "),
+                Span::raw(source_repository.repository),
+            ]));
+            lines.push(Line::from(vec![
+                Span::raw("Repository path: "),
+                Span::raw(source_repository.skill_path),
+            ]));
+        }
+        lines
     } else {
         vec![Line::from("No selected skill")]
     };
