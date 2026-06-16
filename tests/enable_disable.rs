@@ -231,6 +231,108 @@ fn enable_and_disable_report_unknown_or_agent_only_skills() {
 }
 
 #[test]
+fn multi_agent_enable_and_disable_preflight_fail_without_earlier_mutation() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = roots(temp.path());
+    import_skill(&roots, "atomic-helper");
+    fs::create_dir_all(&roots.codex_root).expect("codex root");
+    fs::write(roots.codex_root.join("atomic-helper"), "mine").expect("unsafe codex file");
+
+    let enable_error = enable_skill(
+        &roots,
+        EnableSkillRequest {
+            skill_name: "atomic-helper",
+            agents: &[SkillAgent::ClaudeCode, SkillAgent::Codex],
+        },
+    )
+    .expect_err("later unsafe entry fails preflight");
+
+    assert!(enable_error.actions.is_empty());
+    assert_unsafe_path(enable_error.error, roots.codex_root.join("atomic-helper"));
+    assert!(
+        fs::symlink_metadata(roots.claude_code_root.join("atomic-helper")).is_err(),
+        "earlier Claude Code entry should not be created before preflight succeeds"
+    );
+    assert!(roots.codex_root.join("atomic-helper").is_file());
+
+    fs::remove_file(roots.codex_root.join("atomic-helper")).expect("remove unsafe file");
+    enable_skill(
+        &roots,
+        EnableSkillRequest {
+            skill_name: "atomic-helper",
+            agents: &[SkillAgent::ClaudeCode],
+        },
+    )
+    .expect("enable claude");
+    fs::write(roots.codex_root.join("atomic-helper"), "mine").expect("unsafe codex file");
+
+    let disable_error = disable_skill(
+        &roots,
+        DisableSkillRequest {
+            skill_name: "atomic-helper",
+            agents: &[SkillAgent::ClaudeCode, SkillAgent::Codex],
+        },
+    )
+    .expect_err("later unsafe entry fails disable preflight");
+
+    assert!(disable_error.actions.is_empty());
+    assert_unsafe_path(disable_error.error, roots.codex_root.join("atomic-helper"));
+    assert!(
+        fs::symlink_metadata(roots.claude_code_root.join("atomic-helper"))
+            .expect("earlier symlink should remain")
+            .file_type()
+            .is_symlink()
+    );
+    assert!(roots.codex_root.join("atomic-helper").is_file());
+}
+
+#[test]
+fn duplicate_agent_requests_keep_first_seen_action_order() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = roots(temp.path());
+    write_skill(&roots.canonical_root, "ordered-helper");
+
+    let result = enable_skill(
+        &roots,
+        EnableSkillRequest {
+            skill_name: "ordered-helper",
+            agents: &[SkillAgent::Codex, SkillAgent::ClaudeCode, SkillAgent::Codex],
+        },
+    )
+    .expect("enable");
+
+    let action_agents = result
+        .actions
+        .iter()
+        .map(|action| action.agent)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        action_agents,
+        vec![
+            Some(SkillAgent::Codex),
+            Some(SkillAgent::Codex),
+            Some(SkillAgent::ClaudeCode),
+            Some(SkillAgent::ClaudeCode),
+        ]
+    );
+
+    let second = enable_skill(
+        &roots,
+        EnableSkillRequest {
+            skill_name: "ordered-helper",
+            agents: &[SkillAgent::Codex, SkillAgent::ClaudeCode, SkillAgent::Codex],
+        },
+    )
+    .expect("enable idempotent");
+
+    assert_eq!(second.actions.len(), 2);
+    assert_eq!(second.actions[0].action, SkillActionKind::SkipUnchanged);
+    assert_eq!(second.actions[0].agent, Some(SkillAgent::Codex));
+    assert_eq!(second.actions[1].action, SkillActionKind::SkipUnchanged);
+    assert_eq!(second.actions[1].agent, Some(SkillAgent::ClaudeCode));
+}
+
+#[test]
 fn enable_and_disable_commands_emit_action_json() {
     let temp = tempfile::tempdir().expect("tempdir");
     let roots = roots(temp.path());
