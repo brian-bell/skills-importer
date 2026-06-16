@@ -360,6 +360,7 @@ struct SkillDraft {
     description: Option<String>,
     source: SkillSource,
     source_repository: Option<ImportSourceRepository>,
+    imported_repository_metadata_captured: bool,
     promoted: bool,
     claude_code_status: AgentEntryStatus,
     codex_status: AgentEntryStatus,
@@ -2322,6 +2323,7 @@ fn discover_agent_root(
                 description: metadata.description,
                 source: SkillSource::AgentOnly,
                 source_repository: None,
+                imported_repository_metadata_captured: false,
                 promoted: false,
                 claude_code_status: AgentEntryStatus::Missing,
                 codex_status: AgentEntryStatus::Missing,
@@ -2416,14 +2418,13 @@ fn merge_skill(
         .entry(metadata.name.clone())
         .and_modify(|skill| {
             skill.promoted |= import_metadata.promoted;
-            if source == SkillSource::Imported && import_metadata.source_repository.is_some() {
+            if source == SkillSource::Imported && !skill.imported_repository_metadata_captured {
                 skill.source_repository = import_metadata.source_repository.clone();
+                skill.imported_repository_metadata_captured = true;
             }
             if source_precedence(source) < source_precedence(skill.source) {
                 skill.source = source;
                 skill.analysis_skill_dir = analysis_skill_dir.clone();
-            } else if source == skill.source {
-                skill.source_repository = import_metadata.source_repository.clone();
             }
             if skill.description.is_none() {
                 skill.description = metadata.description.clone();
@@ -2434,6 +2435,7 @@ fn merge_skill(
             description: metadata.description,
             source,
             source_repository: import_metadata.source_repository,
+            imported_repository_metadata_captured: source == SkillSource::Imported,
             promoted: import_metadata.promoted,
             claude_code_status: AgentEntryStatus::Missing,
             codex_status: AgentEntryStatus::Missing,

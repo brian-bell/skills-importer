@@ -589,6 +589,81 @@ fn duplicate_collection_names_use_first_lexical_entry_for_analysis_path() {
 }
 
 #[test]
+fn duplicate_imported_names_keep_first_lexical_source_repository_metadata() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let imports_root = temp.path().join("imports");
+    fs::create_dir_all(&imports_root).expect("imports root");
+
+    let first = write_skill_with_metadata(&imports_root, "a-entry", "same-name", "First.");
+    write_repository_import_manifest(&first, "https://example.test/first.git", "skills/first");
+    let second = write_skill_with_metadata(&imports_root, "z-entry", "same-name", "Second.");
+    write_repository_import_manifest(&second, "https://example.test/second.git", "skills/second");
+
+    let inventory = discover_skills(&DiscoveryRoots {
+        canonical_root: temp.path().join("canonical"),
+        imports_root,
+        claude_code_root: temp.path().join("claude"),
+        codex_root: temp.path().join("codex"),
+    })
+    .expect("discover");
+
+    let skill = find_skill(&inventory, "same-name");
+    assert_eq!(
+        skill.source_repository.as_ref(),
+        Some(&skill_importer::ImportSourceRepository {
+            repository: "https://example.test/first.git".to_string(),
+            skill_path: "skills/first".to_string(),
+        })
+    );
+    assert_eq!(
+        inventory.source_repositories,
+        vec![skill_importer::SourceRepositoryEntry {
+            repository: "https://example.test/first.git".to_string(),
+            skills: vec![skill_importer::SourceRepositorySkill {
+                skill_name: "same-name".to_string(),
+                skill_path: "skills/first".to_string(),
+            }],
+        }]
+    );
+}
+
+#[test]
+fn canonical_skill_with_duplicate_imports_keeps_first_imported_repository_metadata() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let canonical_root = temp.path().join("canonical");
+    let imports_root = temp.path().join("imports");
+    fs::create_dir_all(&imports_root).expect("imports root");
+    write_skill(&canonical_root, "same-name", "Canonical wins.");
+
+    let first = write_skill_with_metadata(&imports_root, "a-entry", "same-name", "First.");
+    write_repository_import_manifest(&first, "https://example.test/first.git", "skills/first");
+    let second = write_skill_with_metadata(&imports_root, "z-entry", "same-name", "Second.");
+    write_repository_import_manifest(&second, "https://example.test/second.git", "skills/second");
+
+    let inventory = discover_skills(&DiscoveryRoots {
+        canonical_root,
+        imports_root,
+        claude_code_root: temp.path().join("claude"),
+        codex_root: temp.path().join("codex"),
+    })
+    .expect("discover");
+
+    let skill = find_skill(&inventory, "same-name");
+    assert_eq!(skill.source, SkillSource::Canonical);
+    assert_eq!(skill.source_repository, None);
+    assert_eq!(
+        inventory.source_repositories,
+        vec![skill_importer::SourceRepositoryEntry {
+            repository: "https://example.test/first.git".to_string(),
+            skills: vec![skill_importer::SourceRepositorySkill {
+                skill_name: "same-name".to_string(),
+                skill_path: "skills/first".to_string(),
+            }],
+        }]
+    );
+}
+
+#[test]
 fn collection_symlink_outside_root_is_discovered_but_not_analyzable() {
     let temp = tempfile::tempdir().expect("tempdir");
     let canonical_root = temp.path().join("canonical");
