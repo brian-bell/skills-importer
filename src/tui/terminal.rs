@@ -611,7 +611,7 @@ mod tests {
     }
 
     #[test]
-    fn pending_frame_is_drawn_before_executing_operation_request() {
+    fn pending_frame_is_drawn_before_executing_enable_request_from_toggle() {
         let mut state = AppState::new(SkillInventory {
             skills: vec![skill("alpha", "First", SkillSource::Canonical)],
             source_repositories: Vec::new(),
@@ -624,7 +624,7 @@ mod tests {
         handle_action_with_pending_observer(
             &mut terminal,
             &mut state,
-            AppAction::RequestEnableSelected,
+            AppAction::ToggleSelectedForAgent(SkillAgent::Codex),
             {
                 let pending_drawn = Rc::clone(&pending_drawn);
                 let request_executed = Rc::clone(&request_executed);
@@ -656,6 +656,57 @@ mod tests {
         assert!(request_executed.get());
         let rendered = terminal_text(&terminal);
         assert!(rendered.contains("Status: pending enable (alpha)"));
+        assert!(state.status_view().expect("completion status").success);
+    }
+
+    #[test]
+    fn pending_frame_is_drawn_before_executing_disable_request_from_toggle() {
+        let mut enabled = skill("alpha", "First", SkillSource::Canonical);
+        enabled.agent_entries.codex = AgentEntryStatus::CanonicalSymlink;
+        let mut state = AppState::new(SkillInventory {
+            skills: vec![enabled],
+            source_repositories: Vec::new(),
+        });
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let pending_drawn = Rc::new(Cell::new(false));
+        let request_executed = Rc::new(Cell::new(false));
+
+        handle_action_with_pending_observer(
+            &mut terminal,
+            &mut state,
+            AppAction::ToggleSelectedForAgent(SkillAgent::Codex),
+            {
+                let pending_drawn = Rc::clone(&pending_drawn);
+                let request_executed = Rc::clone(&request_executed);
+                move |request| {
+                    assert!(
+                        pending_drawn.get(),
+                        "pending frame should be drawn before execution starts"
+                    );
+                    request_executed.set(true);
+                    assert_eq!(
+                        request,
+                        AppOperationRequest::DisableSkill {
+                            skill_name: "alpha".to_string(),
+                            agent: SkillAgent::Codex,
+                        }
+                    );
+                    Ok(TerminalOperationOutcome::Completed(
+                        AppOperationResult::success("disable", Some("alpha".to_string()), 1),
+                    ))
+                }
+            },
+            {
+                let pending_drawn = Rc::clone(&pending_drawn);
+                move || pending_drawn.set(true)
+            },
+        )
+        .expect("handle action");
+
+        assert!(request_executed.get());
+        let rendered = terminal_text(&terminal);
+        assert!(rendered.contains("Status: pending disable (alpha)"));
         assert!(state.status_view().expect("completion status").success);
     }
 

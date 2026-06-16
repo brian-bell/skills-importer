@@ -9,7 +9,7 @@ pub enum AppAction {
     DeleteFilterChar,
     ToggleSourceFilter,
     MoveSelection(SelectionDelta),
-    SwitchTarget(SkillAgent),
+    ToggleSelectedForAgent(SkillAgent),
     OperationFinished(AppOperationResult),
     RepositorySelectionLoaded(crate::RepositorySkillSelection),
     MoveRepositoryCandidate(SelectionDelta),
@@ -28,8 +28,6 @@ pub enum AppAction {
     DeletePromptChar,
     SubmitPrompt,
     RequestAnalyzeSelected,
-    RequestEnableSelected,
-    RequestDisableSelected,
     ConfirmPending,
     ClearPendingRequest,
 }
@@ -167,14 +165,12 @@ pub fn action_for_input(
                 InputOutcome::Action(AppAction::BeginImportPrompt(AppImportSource::Repository))
             }
             AppInput::Char('i') => InputOutcome::Action(AppAction::ToggleSourceFilter),
-            AppInput::Char('c') => {
-                InputOutcome::Action(AppAction::SwitchTarget(crate::SkillAgent::ClaudeCode))
-            }
+            AppInput::Char('c') => InputOutcome::Action(AppAction::ToggleSelectedForAgent(
+                crate::SkillAgent::ClaudeCode,
+            )),
             AppInput::Char('x') => {
-                InputOutcome::Action(AppAction::SwitchTarget(crate::SkillAgent::Codex))
+                InputOutcome::Action(AppAction::ToggleSelectedForAgent(crate::SkillAgent::Codex))
             }
-            AppInput::Char('e') => InputOutcome::Action(AppAction::RequestEnableSelected),
-            AppInput::Char('d') => InputOutcome::Action(AppAction::RequestDisableSelected),
             AppInput::Char('A') => InputOutcome::Action(AppAction::RequestAnalyzeSelected),
             AppInput::Char('p') => {
                 InputOutcome::Action(AppAction::BeginConfirmation(ConfirmationOperation::Promote))
