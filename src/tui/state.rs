@@ -160,6 +160,12 @@ impl AppState {
             }
             AppAction::BeginConfirmation(operation) => {
                 if let Some(skill) = self.selected_skill() {
+                    let operation = if operation == ConfirmationOperation::Promote && skill.promoted
+                    {
+                        ConfirmationOperation::Unpromote
+                    } else {
+                        operation
+                    };
                     self.mode = AppInteractionMode::Confirm {
                         operation,
                         skill_name: skill.name.clone(),
@@ -239,7 +245,7 @@ impl AppState {
                     "i toggle source: {}",
                     source_filter_label(self.source_filter)
                 ),
-                "p promote".to_string(),
+                self.promotion_hint(),
                 "r delete".to_string(),
                 "u URL".to_string(),
                 "f path".to_string(),
@@ -402,6 +408,14 @@ impl AppState {
         }
     }
 
+    fn promotion_hint(&self) -> String {
+        match self.selected_skill() {
+            Some(skill) if skill.promoted => "p unpromote".to_string(),
+            Some(_) => "p promote".to_string(),
+            None => "p promote".to_string(),
+        }
+    }
+
     fn move_repository_candidate(&mut self, delta: SelectionDelta) {
         let AppInteractionMode::RepositorySelection {
             selection,
@@ -537,6 +551,9 @@ impl AppState {
                 ConfirmationOperation::Promote => AppOperationRequest::PromoteSkill {
                     skill_name: skill_name.clone(),
                 },
+                ConfirmationOperation::Unpromote => AppOperationRequest::UnpromoteSkill {
+                    skill_name: skill_name.clone(),
+                },
                 ConfirmationOperation::Delete => AppOperationRequest::DeleteImport {
                     skill_name: skill_name.clone(),
                 },
@@ -577,6 +594,9 @@ fn failure_context(
         }
         Some(AppOperationRequest::PromoteSkill { skill_name }) => {
             ("promote", Some(skill_name.clone()))
+        }
+        Some(AppOperationRequest::UnpromoteSkill { skill_name }) => {
+            ("unpromote", Some(skill_name.clone()))
         }
         Some(AppOperationRequest::DeleteImport { skill_name }) => {
             ("delete", Some(skill_name.clone()))
@@ -672,6 +692,7 @@ pub fn agent_label(agent: SkillAgent) -> &'static str {
 pub fn confirmation_label(operation: ConfirmationOperation) -> &'static str {
     match operation {
         ConfirmationOperation::Promote => "promote",
+        ConfirmationOperation::Unpromote => "unpromote",
         ConfirmationOperation::Delete => "delete",
     }
 }
