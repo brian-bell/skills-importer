@@ -1,10 +1,9 @@
 use super::planner::{DisableEntryWork, DisablePlan, EnableEntryWork, EnablePlan};
 use crate::{
     SkillAction, SkillActionKind, SkillOperationError, SkillOperationFailure, SkillOperationResult,
-    operation_failure,
+    create_symlink, operation_failure,
 };
 use std::fs;
-use std::io;
 use std::path::Path;
 
 pub(super) fn execute_enable(
@@ -102,16 +101,6 @@ fn create_agent_root_if_missing(
         source: None,
     });
     Ok(())
-}
-
-#[cfg(unix)]
-fn create_symlink(target: &Path, link: &Path) -> io::Result<()> {
-    std::os::unix::fs::symlink(target, link)
-}
-
-#[cfg(windows)]
-fn create_symlink(target: &Path, link: &Path) -> io::Result<()> {
-    std::os::windows::fs::symlink_dir(target, link)
 }
 
 #[cfg(test)]

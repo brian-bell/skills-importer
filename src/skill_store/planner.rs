@@ -1,10 +1,10 @@
 use crate::{
-    DiscoveryRoots, SkillAgent, SkillOperationError, SkillOperationFailure, SkillSource,
-    canonicalize_existing_ancestor, discover_skills, empty_operation_failure, symlink_target,
+    AgentMutationState, DiscoveryRoots, SkillAgent, SkillOperationError, SkillOperationFailure,
+    SkillSource, canonicalize_existing_ancestor, discover_skills, empty_operation_failure,
+    exact_managed_symlink_state,
 };
 use std::fs;
-use std::io;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct EnablePlan {
@@ -53,12 +53,6 @@ struct OwnedSkillSource {
     path: PathBuf,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AgentLinkState {
-    Missing,
-    AlreadyCorrect,
-}
-
 pub(super) fn plan_enable(
     roots: &DiscoveryRoots,
     skill_name: &str,
@@ -73,8 +67,8 @@ pub(super) fn plan_enable(
         let state =
             exact_managed_symlink_state(&path, &source.path).map_err(empty_operation_failure)?;
         let work = match state {
-            AgentLinkState::Missing => EnableEntryWork::CreateLink,
-            AgentLinkState::AlreadyCorrect => EnableEntryWork::SkipUnchanged,
+            AgentMutationState::Missing => EnableEntryWork::CreateLink,
+            AgentMutationState::AlreadyCorrect => EnableEntryWork::SkipUnchanged,
         };
         entries.push(EnableEntryPlan {
             agent,
@@ -104,8 +98,8 @@ pub(super) fn plan_disable(
         let state =
             exact_managed_symlink_state(&path, &source.path).map_err(empty_operation_failure)?;
         let work = match state {
-            AgentLinkState::Missing => DisableEntryWork::SkipUnchanged,
-            AgentLinkState::AlreadyCorrect => DisableEntryWork::RemoveLink,
+            AgentMutationState::Missing => DisableEntryWork::SkipUnchanged,
+            AgentMutationState::AlreadyCorrect => DisableEntryWork::RemoveLink,
         };
         entries.push(DisableEntryPlan { agent, path, work });
     }
@@ -173,50 +167,6 @@ fn agent_root(roots: &DiscoveryRoots, agent: SkillAgent) -> PathBuf {
     match agent {
         SkillAgent::ClaudeCode => roots.claude_code_root.clone(),
         SkillAgent::Codex => roots.codex_root.clone(),
-    }
-}
-
-fn exact_managed_symlink_state(
-    path: &Path,
-    expected_target: &Path,
-) -> Result<AgentLinkState, SkillOperationError> {
-    let metadata = match fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return Ok(AgentLinkState::Missing);
-        }
-        Err(error) => return Err(SkillOperationError::Io(error)),
-    };
-
-    if !metadata.file_type().is_symlink() {
-        let reason = if metadata.is_dir() {
-            "real directory is not managed by skill-importer"
-        } else {
-            "regular file is not managed by skill-importer"
-        };
-        return Err(SkillOperationError::UnsafeAgentEntry {
-            path: path.to_path_buf(),
-            reason: reason.to_string(),
-        });
-    }
-
-    match symlink_target(path) {
-        Ok(target) if target == expected_target => Ok(AgentLinkState::AlreadyCorrect),
-        Ok(target) => Err(SkillOperationError::UnsafeAgentEntry {
-            path: path.to_path_buf(),
-            reason: format!(
-                "symlink points to {} instead of {}",
-                target.display(),
-                expected_target.display()
-            ),
-        }),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            Err(SkillOperationError::UnsafeAgentEntry {
-                path: path.to_path_buf(),
-                reason: "broken symlink is not managed by this operation".to_string(),
-            })
-        }
-        Err(error) => Err(SkillOperationError::Io(error)),
     }
 }
 
