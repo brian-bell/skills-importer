@@ -42,9 +42,12 @@ pub struct AnalyzeLaunchPlan {
     pub report_json_path: PathBuf,
     pub report_html_path: PathBuf,
     pub current_exe: PathBuf,
-    pub codex_home: PathBuf,
-    pub codex_config_path: PathBuf,
+    pub source_codex_home: PathBuf,
+    pub codex_profile_name: String,
+    pub codex_profile_path: PathBuf,
     pub isolated_home: PathBuf,
+    pub keychains_link_path: PathBuf,
+    pub keychains_target_path: PathBuf,
     pub inherited_env: Vec<(String, String)>,
 }
 
@@ -109,8 +112,9 @@ impl SkillAnalyzerLauncher for TerminalSkillAnalyzerLauncher {
             .map_err(|error| format!("failed to write analyzer prompt: {error}"))?;
         fs::write(&plan.output_schema_path, &plan.output_schema_content)
             .map_err(|error| format!("failed to write analyzer output schema: {error}"))?;
-        fs::write(&plan.codex_config_path, render_codex_config())
-            .map_err(|error| format!("failed to write analyzer Codex config: {error}"))?;
+        prepare_keychain_link(&plan)?;
+        fs::write(&plan.codex_profile_path, render_codex_config())
+            .map_err(|error| format!("failed to write analyzer Codex profile: {error}"))?;
         fs::write(&plan.script_path, render_launch_script(&plan))
             .map_err(|error| format!("failed to write analyzer script: {error}"))?;
         launch_terminal_script(&plan.script_path)?;
@@ -174,20 +178,24 @@ fn prepare_launch_plan_with_codex_home_and_parent(
     let snapshot_dir = workspace_dir.join("snapshot");
     let report_dir = analysis_dir.join("report");
     let isolated_home = analysis_dir.join("home");
-    let codex_home = isolated_home.join(".codex");
     fs::create_dir_all(&workspace_dir)
         .map_err(|error| format!("failed to create analysis workspace: {error}"))?;
     fs::create_dir_all(&report_dir)
         .map_err(|error| format!("failed to create report directory: {error}"))?;
     fs::create_dir_all(&isolated_home)
         .map_err(|error| format!("failed to create isolated HOME: {error}"))?;
-    fs::create_dir_all(&codex_home)
-        .map_err(|error| format!("failed to create isolated CODEX_HOME: {error}"))?;
+    fs::create_dir_all(source_codex_home)
+        .map_err(|error| format!("failed to create source CODEX_HOME: {error}"))?;
     let prompt_path = workspace_dir.join("prompt.txt");
     let output_schema_path = workspace_dir.join("analysis-report.schema.json");
     let script_path = analysis_dir.join("run-analysis.sh");
     let report_json_path = report_dir.join("report.json");
     let report_html_path = report_dir.join("index.html");
+    let profile_name = codex_profile_name(&analysis_dir);
+    let profile_path = source_codex_home.join(format!("{profile_name}.config.toml"));
+    let source_home = resolve_source_home()?;
+    let keychains_link_path = isolated_home.join("Library").join("Keychains");
+    let keychains_target_path = source_home.join("Library").join("Keychains");
 
     Ok(AnalyzeLaunchPlan {
         skill_name: request.skill_name.clone(),
@@ -204,24 +212,19 @@ fn prepare_launch_plan_with_codex_home_and_parent(
         report_json_path,
         report_html_path,
         current_exe,
-        codex_config_path: codex_home.join("config.toml"),
+        source_codex_home: source_codex_home.to_path_buf(),
+        codex_profile_name: profile_name,
+        codex_profile_path: profile_path,
         isolated_home,
-        codex_home,
+        keychains_link_path,
+        keychains_target_path,
         inherited_env: collect_inherited_env(),
     })
 }
 
 fn analysis_parent_dir() -> Result<PathBuf, String> {
     if cfg!(target_os = "macos") {
-        let home = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .ok_or_else(|| "HOME must be set to launch skill analysis".to_string())?;
-        if !home.is_absolute() {
-            return Err(format!(
-                "HOME must be absolute to launch skill analysis: {}",
-                home.display()
-            ));
-        }
+        let home = resolve_source_home()?;
         Ok(home
             .join("Library")
             .join("Caches")
@@ -229,6 +232,19 @@ fn analysis_parent_dir() -> Result<PathBuf, String> {
     } else {
         Ok(std::env::temp_dir().join("skill-importer-analysis"))
     }
+}
+
+fn resolve_source_home() -> Result<PathBuf, String> {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| "HOME must be set to launch skill analysis".to_string())?;
+    if !home.is_absolute() {
+        return Err(format!(
+            "HOME must be absolute to launch skill analysis: {}",
+            home.display()
+        ));
+    }
+    Ok(home)
 }
 
 pub fn build_analysis_prompt(skill_name: &str) -> String {
@@ -332,6 +348,15 @@ pub fn build_output_schema() -> String {
     .to_string()
 }
 
+fn codex_profile_name(analysis_dir: &Path) -> String {
+    let suffix = analysis_dir
+        .file_name()
+        .and_then(OsStr::to_str)
+        .map(sanitize_name)
+        .unwrap_or_else(|| "skill".to_string());
+    format!("skill-importer-analysis-{suffix}")
+}
+
 fn resolve_source_codex_home() -> PathBuf {
     std::env::var_os("CODEX_HOME")
         .map(PathBuf::from)
@@ -350,6 +375,28 @@ fn reject_file_backed_codex_auth(source_codex_home: &Path) -> Result<(), String>
     Ok(())
 }
 
+fn prepare_keychain_link(plan: &AnalyzeLaunchPlan) -> Result<(), String> {
+    let parent = plan
+        .keychains_link_path
+        .parent()
+        .ok_or_else(|| "isolated keychain link path has no parent".to_string())?;
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("failed to create isolated Library directory: {error}"))?;
+    if plan.keychains_link_path.exists() {
+        return Ok(());
+    }
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&plan.keychains_target_path, &plan.keychains_link_path)
+            .map_err(|error| format!("failed to link macOS keychains into isolated HOME: {error}"))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = plan;
+        Err("skill analysis launch is currently supported only on macOS".to_string())
+    }
+}
+
 pub fn render_launch_script(plan: &AnalyzeLaunchPlan) -> String {
     let env_lines = plan
         .inherited_env
@@ -365,6 +412,11 @@ pub fn render_launch_script(plan: &AnalyzeLaunchPlan) -> String {
         r#"#!/bin/sh
 set -eu
 
+cleanup() {{
+  rm -f {profile_path}
+}}
+trap cleanup EXIT INT TERM
+
 cd {workspace}
 export HOME={home}
 export CODEX_HOME={codex_home}
@@ -377,15 +429,17 @@ if ! "$@" /bin/sh -c 'command -v codex >/dev/null 2>&1'; then
   exit 127
 fi
 
-"$@" codex -a untrusted -C {workspace} exec --ephemeral --ignore-rules --skip-git-repo-check --output-schema {output_schema} --output-last-message {report_json} - < {prompt}
+"$@" codex -a untrusted -p {profile_name} -C {workspace} exec --ephemeral --ignore-rules --skip-git-repo-check --output-schema {output_schema} --output-last-message {report_json} - < {prompt}
 "$@" {renderer} render-analysis-report --input {report_json} --output {report_html}
 test -f {report_html}
 "$@" /usr/bin/open {report_html}
 "#,
+        profile_path = shell_quote_path(&plan.codex_profile_path),
         env_lines = env_lines,
         workspace = shell_quote_path(&plan.workspace_dir),
         home = shell_quote_path(&plan.isolated_home),
-        codex_home = shell_quote_path(&plan.codex_home),
+        codex_home = shell_quote_path(&plan.source_codex_home),
+        profile_name = shell_quote(&plan.codex_profile_name),
         prompt = shell_quote_path(&plan.prompt_path),
         output_schema = shell_quote_path(&plan.output_schema_path),
         renderer = shell_quote_path(&plan.current_exe),
@@ -684,9 +738,14 @@ mod tests {
             report_json_path: PathBuf::from("/tmp/analysis/report/report.json"),
             report_html_path: PathBuf::from("/tmp/analysis/report/index.html"),
             current_exe: PathBuf::from("/Applications/skill importer/bin's/skill-importer"),
-            codex_home: PathBuf::from("/tmp/analysis/home/.codex"),
-            codex_config_path: PathBuf::from("/tmp/analysis/home/.codex/config.toml"),
+            source_codex_home: PathBuf::from("/Users/brian/.codex"),
+            codex_profile_name: "skill-importer-analysis-demo".to_string(),
+            codex_profile_path: PathBuf::from(
+                "/Users/brian/.codex/skill-importer-analysis-demo.config.toml",
+            ),
             isolated_home: PathBuf::from("/tmp/analysis/home"),
+            keychains_link_path: PathBuf::from("/tmp/analysis/home/Library/Keychains"),
+            keychains_target_path: PathBuf::from("/Users/brian/Library/Keychains"),
             inherited_env: vec![
                 ("LANG".to_string(), "en_US.UTF-8".to_string()),
                 ("PATH".to_string(), "/parent/bin:/usr/bin".to_string()),
@@ -701,9 +760,14 @@ mod tests {
         assert!(script.contains("set -- \"$@\" 'LC_CTYPE=UTF-8'"));
         assert!(script.contains("\"HOME=$HOME\""));
         assert!(script.contains("\"CODEX_HOME=$CODEX_HOME\""));
+        assert!(script.contains("export HOME='/tmp/analysis/home'"));
+        assert!(script.contains("export CODEX_HOME='/Users/brian/.codex'"));
+        assert!(
+            script.contains("rm -f '/Users/brian/.codex/skill-importer-analysis-demo.config.toml'")
+        );
         assert!(script.contains("if ! \"$@\" /bin/sh -c 'command -v codex"));
         assert!(script.contains(
-            "codex -a untrusted -C '/tmp/analysis/work space' exec --ephemeral --ignore-rules --skip-git-repo-check --output-schema '/tmp/analysis/work space/report schema.json' --output-last-message '/tmp/analysis/report/report.json'"
+            "codex -a untrusted -p 'skill-importer-analysis-demo' -C '/tmp/analysis/work space' exec --ephemeral --ignore-rules --skip-git-repo-check --output-schema '/tmp/analysis/work space/report schema.json' --output-last-message '/tmp/analysis/report/report.json'"
         ));
         assert!(!script.contains("--sandbox"));
         assert!(!script.contains("--ignore-user-config"));
@@ -824,7 +888,25 @@ mod tests {
             plan.workspace_dir.join("analysis-report.schema.json")
         );
         assert!(plan.output_schema_content.contains("\"security_findings\""));
-        assert_eq!(plan.codex_config_path, plan.codex_home.join("config.toml"));
+        assert_eq!(
+            plan.codex_profile_path.parent(),
+            Some(source_codex_home.as_path())
+        );
+        assert!(
+            plan.codex_profile_name
+                .starts_with("skill-importer-analysis-demo-")
+        );
+        assert_eq!(
+            plan.codex_profile_path.file_name(),
+            Some(OsStr::new(&format!(
+                "{}.config.toml",
+                plan.codex_profile_name
+            )))
+        );
+        assert_eq!(
+            plan.keychains_link_path,
+            plan.isolated_home.join("Library").join("Keychains")
+        );
     }
 
     #[test]
