@@ -7,8 +7,8 @@ use ratatui::{
     widgets::{Block, Borders},
 };
 use skill_importer::{
-    AgentEnablement, AgentEntries, AgentEntryStatus, RepositorySkillCandidate, SkillAgent,
-    SkillEntry, SkillInventory, SkillSource,
+    AgentEnablement, AgentEntries, AgentEntryStatus, RepositorySkillCandidate, SkillEntry,
+    SkillInventory, SkillSource,
     tui::{
         AppAction, AppImportSource, AppOperationResult, AppState, ConfirmationOperation,
         SelectionDelta, render_app,
@@ -22,7 +22,6 @@ fn main_screen_renders_user_visible_sections() {
         skill("beta", "Second skill", SkillSource::Imported),
     ]));
     state.reduce(AppAction::MoveSelection(SelectionDelta::Next));
-    state.reduce(AppAction::SwitchTarget(SkillAgent::ClaudeCode));
     state.reduce(AppAction::OperationFinished(AppOperationResult::success(
         "enable",
         Some("beta".to_string()),
@@ -35,10 +34,11 @@ fn main_screen_renders_user_visible_sections() {
         "Skill Importer TUI",
         "Skill list",
         "Selected detail",
-        "Active target: Claude Code",
-        "Filter: (none) | Source: all | Active target: Claude Code",
+        "Filter: (none) | Source: all",
         "Keyboard hints",
         "i toggle source: all",
+        "c enable Claude Code",
+        "x enable Codex",
         "Status: enable (beta) - success: 2 actions",
         "beta",
         "Source:",
@@ -90,7 +90,7 @@ fn header_shows_imported_source_filter_when_active() {
     let text = render_text(&state, 90, 24);
 
     assert!(
-        text.contains("Filter: (none) | Source: imported | Active target: Codex"),
+        text.contains("Filter: (none) | Source: imported"),
         "missing source scope in:\n{text}"
     );
     assert!(text.contains("beta"), "missing imported row in:\n{text}");
@@ -192,7 +192,9 @@ fn pending_request_status_uses_human_label_instead_of_debug_struct() {
         "First",
         SkillSource::Canonical,
     )]));
-    state.reduce(AppAction::RequestEnableSelected);
+    state.reduce(AppAction::ToggleSelectedForAgent(
+        skill_importer::SkillAgent::Codex,
+    ));
 
     let text = render_text(&state, 80, 20);
 
@@ -233,7 +235,9 @@ fn pending_request_status_takes_precedence_over_previous_result() {
         Some("alpha".to_string()),
         1,
     )));
-    state.reduce(AppAction::RequestEnableSelected);
+    state.reduce(AppAction::ToggleSelectedForAgent(
+        skill_importer::SkillAgent::Codex,
+    ));
 
     let text = render_text(&state, 80, 20);
 

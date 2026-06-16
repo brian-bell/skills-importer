@@ -24,7 +24,6 @@ fn app_state_initializes_from_inventory() {
         ["zeta", "alpha", "beta"]
     );
     assert!(state.visible_skills()[0].selected);
-    assert_eq!(state.active_target(), SkillAgent::Codex);
     assert_eq!(state.filter(), "");
     assert_eq!(state.source_filter(), SourceFilter::All);
     assert_eq!(state.latest_result(), None);
@@ -349,24 +348,48 @@ fn visible_skill_rows_project_enablement_in_visible_order() {
 }
 
 #[test]
-fn active_enablement_target_changes_hints_without_changing_inventory_or_selection() {
+fn main_mode_hints_show_context_aware_agent_toggles() {
     let mut state = AppState::new(inventory([
-        skill("alpha", "First", SkillSource::Canonical),
-        skill("beta", "Second", SkillSource::Imported),
+        skill_with_agent_entries(
+            "alpha",
+            AgentEntryStatus::Missing,
+            AgentEntryStatus::CanonicalSymlink,
+        ),
+        skill_with_agent_entries(
+            "beta",
+            AgentEntryStatus::ImportedSymlink,
+            AgentEntryStatus::Missing,
+        ),
     ]));
+
+    assert_eq!(
+        state.action_hints()[1..3],
+        [
+            "c enable Claude Code".to_string(),
+            "x disable Codex".to_string()
+        ]
+    );
+
     state.reduce(AppAction::MoveSelection(SelectionDelta::Next));
-    let before_names = visible_names(&state);
 
-    state.reduce(AppAction::SwitchTarget(SkillAgent::ClaudeCode));
+    assert_eq!(
+        state.action_hints()[1..3],
+        [
+            "c disable Claude Code".to_string(),
+            "x enable Codex".to_string()
+        ]
+    );
+}
 
-    assert_eq!(state.active_target(), SkillAgent::ClaudeCode);
-    assert_eq!(visible_names(&state), before_names);
-    assert_eq!(selected_name(&state).as_deref(), Some("beta"));
-    assert!(
-        state
-            .action_hints()
-            .iter()
-            .any(|hint| hint.contains("Claude Code"))
+#[test]
+fn main_mode_hints_are_neutral_when_no_skill_is_selected() {
+    let mut state = AppState::new(inventory([skill("alpha", "First", SkillSource::Canonical)]));
+
+    state.reduce(AppAction::FilterChanged("missing".to_string()));
+
+    assert_eq!(
+        state.action_hints()[1..3],
+        ["c Claude Code".to_string(), "x Codex".to_string()]
     );
 }
 
@@ -400,8 +423,7 @@ fn visible_results_replace_success_with_failure_without_stale_text() {
 #[test]
 fn operation_failure_status_preserves_pending_request_context() {
     let mut state = AppState::new(inventory([skill("alpha", "First", SkillSource::Canonical)]));
-    state.reduce(AppAction::SwitchTarget(SkillAgent::Codex));
-    state.reduce(AppAction::RequestEnableSelected);
+    state.reduce(AppAction::ToggleSelectedForAgent(SkillAgent::Codex));
 
     state.reduce(AppAction::CompletePendingOperation(Err(
         "unsafe entry".to_string()
@@ -415,8 +437,12 @@ fn operation_failure_status_preserves_pending_request_context() {
 
 #[test]
 fn operation_failure_status_preserves_context_after_terminal_takes_request() {
-    let mut state = AppState::new(inventory([skill("alpha", "First", SkillSource::Canonical)]));
-    state.reduce(AppAction::RequestDisableSelected);
+    let mut state = AppState::new(inventory([skill_with_agent_entries(
+        "alpha",
+        AgentEntryStatus::Missing,
+        AgentEntryStatus::SkillDirectory,
+    )]));
+    state.reduce(AppAction::ToggleSelectedForAgent(SkillAgent::Codex));
     let request = state.take_pending_request().expect("pending request");
 
     state.reduce(AppAction::CompleteOperation {
@@ -556,8 +582,7 @@ fn repository_completion_success_exits_selection_and_failure_preserves_retry_con
 fn enable_disable_and_import_intents_become_pending_requests() {
     let mut state = AppState::new(inventory([skill("alpha", "First", SkillSource::Canonical)]));
 
-    state.reduce(AppAction::SwitchTarget(SkillAgent::ClaudeCode));
-    state.reduce(AppAction::RequestEnableSelected);
+    state.reduce(AppAction::ToggleSelectedForAgent(SkillAgent::ClaudeCode));
     assert_eq!(
         state.pending_request(),
         Some(&AppOperationRequest::EnableSkill {
@@ -567,7 +592,12 @@ fn enable_disable_and_import_intents_become_pending_requests() {
     );
 
     state.reduce(AppAction::ClearPendingRequest);
-    state.reduce(AppAction::RequestDisableSelected);
+    state.update_inventory(inventory([skill_with_agent_entries(
+        "alpha",
+        AgentEntryStatus::ImportedSymlink,
+        AgentEntryStatus::Missing,
+    )]));
+    state.reduce(AppAction::ToggleSelectedForAgent(SkillAgent::ClaudeCode));
     assert_eq!(
         state.pending_request(),
         Some(&AppOperationRequest::DisableSkill {
@@ -586,6 +616,136 @@ fn enable_disable_and_import_intents_become_pending_requests() {
         state.pending_request(),
         Some(&AppOperationRequest::ImportUrl {
             url: "https://example.test/skill.md".to_string(),
+        })
+    );
+}
+
+#[test]
+fn agent_toggles_dispatch_enable_when_agent_entry_is_disabled() {
+    for disabled_status in [AgentEntryStatus::Missing, AgentEntryStatus::BrokenSymlink] {
+        let mut state = AppState::new(inventory([skill_with_agent_entries(
+            "alpha",
+            disabled_status,
+            disabled_status,
+        )]));
+
+        state.reduce(AppAction::ToggleSelectedForAgent(SkillAgent::ClaudeCode));
+        assert_eq!(
+            state.pending_request(),
+            Some(&AppOperationRequest::EnableSkill {
+                skill_name: "alpha".to_string(),
+                agent: SkillAgent::ClaudeCode,
+            }),
+            "Claude Code status {disabled_status:?} should enable"
+        );
+
+        state.reduce(AppAction::ToggleSelectedForAgent(SkillAgent::Codex));
+        assert_eq!(
+            state.pending_request(),
+            Some(&AppOperationRequest::EnableSkill {
+                skill_name: "alpha".to_string(),
+                agent: SkillAgent::Codex,
+            }),
+            "Codex status {disabled_status:?} should enable"
+        );
+    }
+}
+
+#[test]
+fn agent_toggles_dispatch_disable_when_agent_entry_is_enabled() {
+    for enabled_status in [
+        AgentEntryStatus::SkillDirectory,
+        AgentEntryStatus::CanonicalSymlink,
+        AgentEntryStatus::ImportedSymlink,
+        AgentEntryStatus::ExternalSymlink,
+    ] {
+        let mut state = AppState::new(inventory([skill_with_agent_entries(
+            "alpha",
+            enabled_status,
+            enabled_status,
+        )]));
+
+        state.reduce(AppAction::ToggleSelectedForAgent(SkillAgent::ClaudeCode));
+        assert_eq!(
+            state.pending_request(),
+            Some(&AppOperationRequest::DisableSkill {
+                skill_name: "alpha".to_string(),
+                agent: SkillAgent::ClaudeCode,
+            }),
+            "Claude Code status {enabled_status:?} should disable"
+        );
+
+        state.reduce(AppAction::ToggleSelectedForAgent(SkillAgent::Codex));
+        assert_eq!(
+            state.pending_request(),
+            Some(&AppOperationRequest::DisableSkill {
+                skill_name: "alpha".to_string(),
+                agent: SkillAgent::Codex,
+            }),
+            "Codex status {enabled_status:?} should disable"
+        );
+    }
+}
+
+#[test]
+fn both_enabled_toggle_disables_only_the_requested_agent() {
+    let mut state = AppState::new(inventory([skill_with_agent_entries(
+        "alpha",
+        AgentEntryStatus::CanonicalSymlink,
+        AgentEntryStatus::ImportedSymlink,
+    )]));
+
+    state.reduce(AppAction::ToggleSelectedForAgent(SkillAgent::Codex));
+
+    assert_eq!(
+        state.pending_request(),
+        Some(&AppOperationRequest::DisableSkill {
+            skill_name: "alpha".to_string(),
+            agent: SkillAgent::Codex,
+        })
+    );
+}
+
+#[test]
+fn agent_toggle_without_selection_leaves_pending_request_unchanged() {
+    let mut state = AppState::new(inventory([skill("alpha", "First", SkillSource::Canonical)]));
+    state.reduce(AppAction::BeginImportPrompt(AppImportSource::Url));
+    state.reduce(AppAction::PromptChanged(
+        "https://example.test/skill.md".to_string(),
+    ));
+    state.reduce(AppAction::SubmitPrompt);
+    state.reduce(AppAction::FilterChanged("missing".to_string()));
+
+    state.reduce(AppAction::ToggleSelectedForAgent(SkillAgent::Codex));
+
+    assert_eq!(
+        state.pending_request(),
+        Some(&AppOperationRequest::ImportUrl {
+            url: "https://example.test/skill.md".to_string(),
+        })
+    );
+}
+
+#[test]
+fn agent_toggle_overwrites_existing_pending_request() {
+    let mut state = AppState::new(inventory([skill_with_agent_entries(
+        "alpha",
+        AgentEntryStatus::Missing,
+        AgentEntryStatus::SkillDirectory,
+    )]));
+    state.reduce(AppAction::BeginImportPrompt(AppImportSource::Url));
+    state.reduce(AppAction::PromptChanged(
+        "https://example.test/skill.md".to_string(),
+    ));
+    state.reduce(AppAction::SubmitPrompt);
+
+    state.reduce(AppAction::ToggleSelectedForAgent(SkillAgent::Codex));
+
+    assert_eq!(
+        state.pending_request(),
+        Some(&AppOperationRequest::DisableSkill {
+            skill_name: "alpha".to_string(),
+            agent: SkillAgent::Codex,
         })
     );
 }
@@ -663,6 +823,35 @@ fn skill_with_enablement(name: &str, enablement: AgentEnablement) -> SkillEntry 
     let mut entry = skill(name, "Skill", SkillSource::Canonical);
     entry.enablement = enablement;
     entry
+}
+
+fn skill_with_agent_entries(
+    name: &str,
+    claude_code: AgentEntryStatus,
+    codex: AgentEntryStatus,
+) -> SkillEntry {
+    let mut entry = skill(name, "Skill", SkillSource::Canonical);
+    entry.agent_entries = AgentEntries { claude_code, codex };
+    entry.enablement = match (
+        entry_status_is_enabled(claude_code),
+        entry_status_is_enabled(codex),
+    ) {
+        (true, true) => AgentEnablement::Both,
+        (true, false) => AgentEnablement::ClaudeCode,
+        (false, true) => AgentEnablement::Codex,
+        (false, false) => AgentEnablement::Neither,
+    };
+    entry
+}
+
+fn entry_status_is_enabled(status: AgentEntryStatus) -> bool {
+    matches!(
+        status,
+        AgentEntryStatus::SkillDirectory
+            | AgentEntryStatus::CanonicalSymlink
+            | AgentEntryStatus::ImportedSymlink
+            | AgentEntryStatus::ExternalSymlink
+    )
 }
 
 fn selected_name(state: &AppState) -> Option<String> {
