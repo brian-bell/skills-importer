@@ -2327,8 +2327,11 @@ fn discover_agent_root(
                 promoted: false,
                 claude_code_status: AgentEntryStatus::Missing,
                 codex_status: AgentEntryStatus::Missing,
-                analysis_skill_dir,
+                analysis_skill_dir: analysis_skill_dir.clone(),
             });
+        if skill.source == SkillSource::AgentOnly && skill.analysis_skill_dir.is_none() {
+            skill.analysis_skill_dir = analysis_skill_dir;
+        }
 
         match agent {
             AgentKind::ClaudeCode => skill.claude_code_status = status,
@@ -2414,11 +2417,13 @@ fn merge_skill(
     import_metadata: ImportDiscoveryMetadata,
     analysis_skill_dir: Option<PathBuf>,
 ) {
+    let has_imported_repository_metadata =
+        source == SkillSource::Imported && import_metadata.source_repository.is_some();
     skills
         .entry(metadata.name.clone())
         .and_modify(|skill| {
             skill.promoted |= import_metadata.promoted;
-            if source == SkillSource::Imported && !skill.imported_repository_metadata_captured {
+            if has_imported_repository_metadata && !skill.imported_repository_metadata_captured {
                 skill.source_repository = import_metadata.source_repository.clone();
                 skill.imported_repository_metadata_captured = true;
             }
@@ -2435,7 +2440,7 @@ fn merge_skill(
             description: metadata.description,
             source,
             source_repository: import_metadata.source_repository,
-            imported_repository_metadata_captured: source == SkillSource::Imported,
+            imported_repository_metadata_captured: has_imported_repository_metadata,
             promoted: import_metadata.promoted,
             claude_code_status: AgentEntryStatus::Missing,
             codex_status: AgentEntryStatus::Missing,

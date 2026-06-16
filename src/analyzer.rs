@@ -132,6 +132,16 @@ pub fn prepare_launch_plan(
     request: &AnalyzeSkillRequest,
     current_exe: PathBuf,
 ) -> Result<AnalyzeLaunchPlan, String> {
+    let source_codex_home = resolve_source_codex_home();
+    prepare_launch_plan_with_codex_home(request, current_exe, &source_codex_home)
+}
+
+fn prepare_launch_plan_with_codex_home(
+    request: &AnalyzeSkillRequest,
+    current_exe: PathBuf,
+    source_codex_home: &Path,
+) -> Result<AnalyzeLaunchPlan, String> {
+    reject_file_backed_codex_auth(source_codex_home)?;
     if !request.skill_dir.join("SKILL.md").is_file() {
         return Err(format!(
             "selected skill does not have a readable SKILL.md at {}",
@@ -147,20 +157,19 @@ pub fn prepare_launch_plan(
     let snapshot_dir = workspace_dir.join("snapshot");
     let report_dir = analysis_dir.join("report");
     let isolated_home = analysis_dir.join("home");
+    let codex_home = isolated_home.join(".codex");
     fs::create_dir_all(&workspace_dir)
         .map_err(|error| format!("failed to create analysis workspace: {error}"))?;
     fs::create_dir_all(&report_dir)
         .map_err(|error| format!("failed to create report directory: {error}"))?;
     fs::create_dir_all(&isolated_home)
         .map_err(|error| format!("failed to create isolated HOME: {error}"))?;
+    fs::create_dir_all(&codex_home)
+        .map_err(|error| format!("failed to create isolated CODEX_HOME: {error}"))?;
     let prompt_path = workspace_dir.join("prompt.txt");
     let script_path = analysis_dir.join("run-analysis.sh");
     let report_json_path = workspace_dir.join("report.json");
     let report_html_path = report_dir.join("index.html");
-    let codex_home = std::env::var_os("CODEX_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".codex")))
-        .unwrap_or_else(|| PathBuf::from(".codex"));
 
     Ok(AnalyzeLaunchPlan {
         skill_name: request.skill_name.clone(),
@@ -215,6 +224,24 @@ important, what tools it expects, and where a human reviewer should focus.
     )
 }
 
+fn resolve_source_codex_home() -> PathBuf {
+    std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".codex")))
+        .unwrap_or_else(|| PathBuf::from(".codex"))
+}
+
+fn reject_file_backed_codex_auth(source_codex_home: &Path) -> Result<(), String> {
+    let source_auth = source_codex_home.join("auth.json");
+    if source_auth.exists() {
+        return Err(format!(
+            "skill analysis cannot safely run with file-backed Codex auth at {}; use a Codex auth mode that does not expose reusable credentials to shell tools",
+            source_auth.display()
+        ));
+    }
+    Ok(())
+}
+
 pub fn render_launch_script(plan: &AnalyzeLaunchPlan) -> String {
     let env_lines = plan
         .inherited_env
@@ -242,7 +269,7 @@ if ! "$@" /bin/sh -c 'command -v codex >/dev/null 2>&1'; then
   exit 127
 fi
 
-"$@" codex exec --skip-git-repo-check --sandbox workspace-write --ask-for-approval never -C {workspace} - < {prompt}
+"$@" codex --sandbox workspace-write -a never -C {workspace} exec --ephemeral --ignore-user-config --ignore-rules --skip-git-repo-check - < {prompt}
 "$@" {renderer} render-analysis-report --input {report_json} --output {report_html}
 test -f {report_html}
 "$@" /usr/bin/open {report_html}
@@ -560,7 +587,7 @@ mod tests {
         assert!(script.contains("\"CODEX_HOME=$CODEX_HOME\""));
         assert!(script.contains("if ! \"$@\" /bin/sh -c 'command -v codex"));
         assert!(script.contains(
-            "codex exec --skip-git-repo-check --sandbox workspace-write --ask-for-approval never"
+            "codex --sandbox workspace-write -a never -C '/tmp/work space' exec --ephemeral --ignore-user-config --ignore-rules --skip-git-repo-check"
         ));
         assert!(script.contains("render-analysis-report"));
         assert!(script.contains(
@@ -604,12 +631,16 @@ mod tests {
         )
         .expect("skill");
 
-        let plan = prepare_launch_plan(
+        let source_codex_home = temp.path().join("source-codex-home");
+        fs::create_dir_all(&source_codex_home).expect("source codex home");
+
+        let plan = prepare_launch_plan_with_codex_home(
             &AnalyzeSkillRequest {
                 skill_name: "demo".to_string(),
                 skill_dir,
             },
             PathBuf::from("/bin/skill-importer"),
+            &source_codex_home,
         )
         .expect("launch plan");
 
@@ -623,6 +654,34 @@ mod tests {
             Some(OsStr::new("report.json"))
         );
         assert_eq!(plan.report_html_path, plan.report_dir.join("index.html"));
+    }
+
+    #[test]
+    fn launch_plan_rejects_file_backed_codex_auth() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let skill_dir = temp.path().join("skill");
+        let source_codex_home = temp.path().join("source-codex-home");
+        fs::create_dir_all(&skill_dir).expect("skill dir");
+        fs::create_dir_all(&source_codex_home).expect("source codex home");
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: demo\ndescription: Demo.\n---\n",
+        )
+        .expect("skill");
+        fs::write(source_codex_home.join("auth.json"), r#"{"token":"fake"}"#).expect("auth");
+
+        let error = prepare_launch_plan_with_codex_home(
+            &AnalyzeSkillRequest {
+                skill_name: "demo".to_string(),
+                skill_dir,
+            },
+            PathBuf::from("/bin/skill-importer"),
+            &source_codex_home,
+        )
+        .expect_err("file auth is rejected");
+
+        assert!(error.contains("file-backed Codex auth"));
+        assert!(error.contains("auth.json"));
     }
 
     #[test]

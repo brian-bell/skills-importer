@@ -628,6 +628,45 @@ fn duplicate_imported_names_keep_first_lexical_source_repository_metadata() {
 }
 
 #[test]
+fn duplicate_imported_names_use_later_repository_metadata_when_first_has_none() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let imports_root = temp.path().join("imports");
+    fs::create_dir_all(&imports_root).expect("imports root");
+
+    let first = write_skill_with_metadata(&imports_root, "a-entry", "same-name", "First.");
+    write_import_manifest(&first, false);
+    let second = write_skill_with_metadata(&imports_root, "z-entry", "same-name", "Second.");
+    write_repository_import_manifest(&second, "https://example.test/second.git", "skills/second");
+
+    let inventory = discover_skills(&DiscoveryRoots {
+        canonical_root: temp.path().join("canonical"),
+        imports_root,
+        claude_code_root: temp.path().join("claude"),
+        codex_root: temp.path().join("codex"),
+    })
+    .expect("discover");
+
+    let skill = find_skill(&inventory, "same-name");
+    assert_eq!(
+        skill.source_repository.as_ref(),
+        Some(&skill_importer::ImportSourceRepository {
+            repository: "https://example.test/second.git".to_string(),
+            skill_path: "skills/second".to_string(),
+        })
+    );
+    assert_eq!(
+        inventory.source_repositories,
+        vec![skill_importer::SourceRepositoryEntry {
+            repository: "https://example.test/second.git".to_string(),
+            skills: vec![skill_importer::SourceRepositorySkill {
+                skill_name: "same-name".to_string(),
+                skill_path: "skills/second".to_string(),
+            }],
+        }]
+    );
+}
+
+#[test]
 fn canonical_skill_with_duplicate_imports_keeps_first_imported_repository_metadata() {
     let temp = tempfile::tempdir().expect("tempdir");
     let canonical_root = temp.path().join("canonical");
@@ -713,6 +752,31 @@ fn agent_only_analysis_paths_use_real_skill_directories_with_claude_precedence()
     );
     let no_skill_file = find_skill(&inventory, "no-skill-file");
     assert_eq!(no_skill_file.analysis_skill_dir, None);
+}
+
+#[test]
+fn agent_only_analysis_path_backfills_from_later_real_agent_directory() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let claude_root = temp.path().join("claude");
+    let codex_root = temp.path().join("codex");
+    fs::create_dir_all(claude_root.join("agent-helper")).expect("claude placeholder");
+    fs::create_dir_all(&codex_root).expect("codex root");
+    let codex = write_skill(&codex_root, "agent-helper", "Codex.");
+
+    let inventory = discover_skills(&DiscoveryRoots {
+        canonical_root: temp.path().join("canonical"),
+        imports_root: temp.path().join("imports"),
+        claude_code_root: claude_root,
+        codex_root,
+    })
+    .expect("discover");
+
+    let agent = find_skill(&inventory, "agent-helper");
+    assert_eq!(agent.source, SkillSource::AgentOnly);
+    assert_eq!(
+        agent.analysis_skill_dir.as_deref(),
+        Some(fs::canonicalize(codex).expect("codex").as_path())
+    );
 }
 
 #[test]
