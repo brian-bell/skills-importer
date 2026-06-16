@@ -13,7 +13,7 @@ use ratatui::{
 use crate::{
     DeleteImportRequest, DiscoveryRoots, ImportLocalPathRequest, ImportMarkdownRequest,
     ImportRepositoryRequest, ImportUrlRequest, PromoteSkillRequest, SkillRepositoryCheckout,
-    SkillRepositoryFetchError, SkillRepositoryProvider, SkillUrlFetcher,
+    SkillRepositoryFetchError, SkillRepositoryProvider, SkillUrlFetcher, UnpromoteSkillRequest,
     analyzer::{AnalyzeSkillRequest, SkillAnalyzerLauncher, TerminalSkillAnalyzerLauncher},
     discover_skills, workflow,
 };
@@ -192,6 +192,15 @@ fn execute_operation_request(
             repository_provider,
             "promote",
             workflow::OperationRequest::Promote(PromoteSkillRequest {
+                skill_name: &skill_name,
+            }),
+        ),
+        AppOperationRequest::UnpromoteSkill { skill_name } => execute_workflow_request(
+            roots,
+            url_fetcher,
+            repository_provider,
+            "unpromote",
+            workflow::OperationRequest::Unpromote(UnpromoteSkillRequest {
                 skill_name: &skill_name,
             }),
         ),

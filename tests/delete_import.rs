@@ -6,9 +6,9 @@ use std::process::Command;
 use serde_json::Value;
 use skill_importer::{
     DeleteImportRequest, DiscoveryRoots, EnableSkillRequest, ImportMarkdownRequest,
-    PromoteSkillRequest, SkillActionKind, SkillAgent, SkillOperationError,
+    PromoteSkillRequest, SkillActionKind, SkillAgent, SkillOperationError, UnpromoteSkillRequest,
     delete_unpromoted_import, discover_skills, enable_skill, import_markdown_skill,
-    promote_imported_skill,
+    promote_imported_skill, unpromote_imported_skill,
 };
 
 #[test]
@@ -39,6 +39,38 @@ fn deleting_unpromoted_import_removes_storage_reports_action_and_updates_invento
             .iter()
             .all(|skill| skill.name != "delete-helper")
     );
+}
+
+#[test]
+fn promoted_import_can_be_unpromoted_then_deleted() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = roots(temp.path());
+    import_markdown(&roots, "delete-promoted-helper");
+    promote_imported_skill(
+        &roots,
+        PromoteSkillRequest {
+            skill_name: "delete-promoted-helper",
+        },
+    )
+    .expect("promote");
+
+    unpromote_imported_skill(
+        &roots,
+        UnpromoteSkillRequest {
+            skill_name: "delete-promoted-helper",
+        },
+    )
+    .expect("unpromote");
+    delete_unpromoted_import(
+        &roots,
+        DeleteImportRequest {
+            skill_name: "delete-promoted-helper",
+        },
+    )
+    .expect("delete");
+
+    assert!(!roots.imports_root.join("delete-promoted-helper").exists());
+    assert!(!roots.canonical_root.join("delete-promoted-helper").exists());
 }
 
 #[test]

@@ -856,6 +856,30 @@ fn promote_and_delete_require_confirmation_before_pending_request() {
     );
 }
 
+#[test]
+fn promoted_skill_uses_promotion_shortcut_to_queue_unpromote() {
+    let mut promoted = skill("alpha", "First", SkillSource::Imported);
+    promoted.promoted = true;
+    let mut state = AppState::new(inventory([promoted]));
+
+    state.reduce(AppAction::BeginConfirmation(ConfirmationOperation::Promote));
+    assert!(matches!(
+        state.mode(),
+        AppInteractionMode::Confirm {
+            operation: ConfirmationOperation::Unpromote,
+            ..
+        }
+    ));
+    state.reduce(AppAction::ConfirmPending);
+
+    assert_eq!(
+        state.pending_request(),
+        Some(&AppOperationRequest::UnpromoteSkill {
+            skill_name: "alpha".to_string(),
+        })
+    );
+}
+
 fn inventory<const N: usize>(skills: [SkillEntry; N]) -> SkillInventory {
     SkillInventory {
         skills: skills.into_iter().collect(),
