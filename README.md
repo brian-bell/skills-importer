@@ -29,31 +29,19 @@ make clippy
 make check
 ```
 
-`make run-list` and `make run-tui` use disposable local roots under
-`.skill-importer/dev` for imports and agent roots. They default to a sibling
-skills repo at `../skills` for canonical skills:
+`make run-list` and `make run-tui` use the shared data directory at
+`~/.skills-source` for canonical skills, imports, Claude Code links, and Codex
+links:
 
 ```bash
 make run-list
 make run-tui
 ```
 
-Use the production TUI target when you want user-level agent roots instead of
-disposable development agent roots:
-
-```bash
-make run-prod
-```
-
-`make run-prod` runs `skill-importer tui` without root overrides. It uses
-normal CLI defaults for canonical and imported skills, while enable and disable
-actions can create or remove user-level symlinks in `~/.claude/skills` and
-`~/.agents/skills`.
-
 Override roots when needed:
 
 ```bash
-make run-list SKILLS_REPO=/path/to/skills
+make run-list DATA_DIR=/path/to/skills-source
 make run-tui CANONICAL_ROOT=/path/to/catalog/portable
 ```
 
@@ -81,11 +69,11 @@ All commands accept root overrides:
 --codex-root PATH
 ```
 
-When launched inside a skills catalog repo with `AGENTS.md` and
-`catalog/portable/`, the default canonical root is that catalog. Otherwise, the
-fallback canonical root is the current directory. JSON commands without root
-overrides use the default imports root plus user-level agent roots:
-`~/.claude/skills` for Claude Code and `~/.agents/skills` for Codex.
+JSON commands without root overrides use `~/.skills-source` as a single data
+directory. The default roots are `~/.skills-source/catalog/portable` for
+canonical skills, `~/.skills-source/imports` for imports,
+`~/.skills-source/claude-code` for Claude Code links, and
+`~/.skills-source/codex` for Codex links.
 
 Repository imports persist structured `source_repository` metadata in each
 import manifest. `skill-importer list --json` includes that metadata on imported

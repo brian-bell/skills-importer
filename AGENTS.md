@@ -30,7 +30,6 @@ make clippy
 make check
 make run-list
 make run-tui
-make run-prod
 ```
 
 The underlying commands are:
@@ -41,16 +40,10 @@ cargo test
 cargo clippy --all-targets -- -D warnings
 ```
 
-`make run-list` and `make run-tui` use disposable local roots under
-`.skill-importer/dev` for imports and agent roots. By default, they look for a
-sibling skills catalog at `../skills/catalog/portable`; override
-`SKILLS_REPO`, `CANONICAL_ROOT`, `IMPORTS_ROOT`, `CLAUDE_CODE_ROOT`, or
-`CODEX_ROOT` when working elsewhere.
-
-`make run-prod` runs the TUI without disposable root overrides. It uses
-normal CLI defaults for canonical and imported skills, plus user-level agent
-roots at `~/.claude/skills` and `~/.agents/skills`, so enable/disable actions
-can mutate user-level skill symlinks.
+`make run-list` and `make run-tui` use the shared data directory at
+`~/.skills-source` for canonical skills, imports, Claude Code links, and Codex
+links. Override `DATA_DIR`, `CANONICAL_ROOT`, `IMPORTS_ROOT`,
+`CLAUDE_CODE_ROOT`, or `CODEX_ROOT` when working elsewhere.
 
 ## Behavior
 
@@ -75,5 +68,5 @@ can mutate user-level skill symlinks.
 - Use TDD for behavior changes when practical.
 - Keep filesystem mutations covered through public core or command interfaces.
 - Prefer disposable roots in tests and manual TUI smoke runs.
-- Do not let tests or manual verification touch real `~/.claude/skills` or
-  `~/.agents/skills` unless explicitly configured.
+- Do not let tests or manual verification touch real `~/.skills-source` unless
+  explicitly configured.
