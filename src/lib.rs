@@ -140,6 +140,11 @@ pub struct PromoteSkillRequest<'request> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnpromoteSkillRequest<'request> {
+    pub skill_name: &'request str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeleteImportRequest<'request> {
     pub skill_name: &'request str,
 }
@@ -298,6 +303,7 @@ pub enum SkillOperationError {
     Collision { name: String, path: PathBuf },
     EnabledImport { name: String, path: PathBuf },
     AlreadyPromoted { name: String },
+    NotPromoted { name: String },
     Io(io::Error),
     Serialize(serde_json::Error),
 }
@@ -722,6 +728,56 @@ pub fn promote_imported_skill(
             source: None,
         });
     }
+
+    Ok(SkillOperationResult {
+        skill_name: plan.skill_name,
+        actions,
+    })
+}
+
+pub fn unpromote_imported_skill(
+    roots: &DiscoveryRoots,
+    request: UnpromoteSkillRequest<'_>,
+) -> Result<SkillOperationResult, SkillOperationFailure> {
+    let mut plan = preflight_unpromotion(roots, request.skill_name)?;
+    let mut actions = Vec::new();
+
+    for relink in plan.relinks {
+        fs::remove_file(&relink.path)
+            .map_err(SkillOperationError::Io)
+            .map_err(|error| operation_failure(error, actions.clone()))?;
+        actions.push(SkillAction {
+            action: SkillActionKind::RemoveSymlink,
+            agent: Some(relink.agent),
+            path: relink.path.clone(),
+            target: Some(plan.canonical_path.clone()),
+            source: None,
+        });
+        create_symlink(&plan.import_path, &relink.path)
+            .map_err(SkillOperationError::Io)
+            .map_err(|error| operation_failure(error, actions.clone()))?;
+        actions.push(SkillAction {
+            action: SkillActionKind::CreateSymlink,
+            agent: Some(relink.agent),
+            path: relink.path,
+            target: Some(plan.import_path.clone()),
+            source: None,
+        });
+    }
+
+    fs::remove_dir_all(&plan.canonical_path)
+        .map_err(SkillOperationError::Io)
+        .map_err(|error| operation_failure(error, actions.clone()))?;
+    actions.push(SkillAction {
+        action: SkillActionKind::RemoveDirectory,
+        agent: None,
+        path: plan.canonical_path.clone(),
+        target: None,
+        source: Some(plan.import_path.clone()),
+    });
+
+    plan.manifest.promoted = false;
+    write_operation_import_manifest(&plan.manifest_path, &plan.manifest, &mut actions)?;
 
     Ok(SkillOperationResult {
         skill_name: plan.skill_name,
@@ -1190,6 +1246,16 @@ struct PromotionPlan {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct UnpromotionPlan {
+    skill_name: String,
+    import_path: PathBuf,
+    canonical_path: PathBuf,
+    manifest_path: PathBuf,
+    manifest: ImportManifest,
+    relinks: Vec<AgentRelinkPlan>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct DeleteImportPlan {
     skill_name: String,
     import_path: PathBuf,
@@ -1220,7 +1286,7 @@ fn preflight_promotion(
     roots: &DiscoveryRoots,
     skill_name: &str,
 ) -> Result<PromotionPlan, SkillOperationFailure> {
-    let preflight = resolve_import_preflight(roots, skill_name)?;
+    let preflight = resolve_draft_import_preflight(roots, skill_name)?;
     ensure_canonical_destination_available(skill_name, &preflight.canonical_path)?;
 
     let mut relinks = Vec::new();
@@ -1246,11 +1312,55 @@ fn preflight_promotion(
     })
 }
 
+fn preflight_unpromotion(
+    roots: &DiscoveryRoots,
+    skill_name: &str,
+) -> Result<UnpromotionPlan, SkillOperationFailure> {
+    let preflight = resolve_promoted_import_preflight(roots, skill_name)?;
+    match fs::symlink_metadata(&preflight.canonical_path) {
+        Ok(metadata) if metadata.is_dir() => {}
+        Ok(_) => {
+            return Err(empty_operation_failure(
+                SkillOperationError::UnsupportedSkillSource {
+                    name: skill_name.to_string(),
+                },
+            ));
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Err(empty_operation_failure(SkillOperationError::UnknownSkill {
+                name: skill_name.to_string(),
+            }));
+        }
+        Err(error) => return Err(empty_operation_failure(SkillOperationError::Io(error))),
+    }
+
+    let mut relinks = Vec::new();
+    for agent in [SkillAgent::ClaudeCode, SkillAgent::Codex] {
+        let path = agent_root(roots, agent).join(skill_name);
+        match exact_managed_symlink_state(&path, &preflight.canonical_path) {
+            Ok(AgentMutationState::Missing) => {}
+            Ok(AgentMutationState::AlreadyCorrect) => {
+                relinks.push(AgentRelinkPlan { agent, path });
+            }
+            Err(error) => return Err(empty_operation_failure(error)),
+        }
+    }
+
+    Ok(UnpromotionPlan {
+        skill_name: skill_name.to_string(),
+        import_path: preflight.import_path,
+        canonical_path: preflight.canonical_path,
+        manifest_path: preflight.manifest_path,
+        manifest: preflight.manifest,
+        relinks,
+    })
+}
+
 fn preflight_delete_import(
     roots: &DiscoveryRoots,
     skill_name: &str,
 ) -> Result<DeleteImportPlan, SkillOperationFailure> {
-    let preflight = resolve_import_preflight(roots, skill_name)?;
+    let preflight = resolve_draft_import_preflight(roots, skill_name)?;
 
     for agent in [SkillAgent::ClaudeCode, SkillAgent::Codex] {
         let path = agent_root(roots, agent).join(skill_name);
@@ -1273,7 +1383,37 @@ fn preflight_delete_import(
     })
 }
 
-fn resolve_import_preflight(
+fn resolve_draft_import_preflight(
+    roots: &DiscoveryRoots,
+    skill_name: &str,
+) -> Result<ImportPreflight, SkillOperationFailure> {
+    let preflight = resolve_any_import_preflight(roots, skill_name)?;
+    if preflight.manifest.promoted {
+        return Err(empty_operation_failure(
+            SkillOperationError::AlreadyPromoted {
+                name: skill_name.to_string(),
+            },
+        ));
+    }
+
+    Ok(preflight)
+}
+
+fn resolve_promoted_import_preflight(
+    roots: &DiscoveryRoots,
+    skill_name: &str,
+) -> Result<ImportPreflight, SkillOperationFailure> {
+    let preflight = resolve_any_import_preflight(roots, skill_name)?;
+    if !preflight.manifest.promoted {
+        return Err(empty_operation_failure(SkillOperationError::NotPromoted {
+            name: skill_name.to_string(),
+        }));
+    }
+
+    Ok(preflight)
+}
+
+fn resolve_any_import_preflight(
     roots: &DiscoveryRoots,
     skill_name: &str,
 ) -> Result<ImportPreflight, SkillOperationFailure> {
@@ -1311,13 +1451,6 @@ fn resolve_import_preflight(
     let manifest = read_import_manifest(&manifest_path)
         .map_err(SkillOperationError::Io)
         .map_err(empty_operation_failure)?;
-    if manifest.promoted {
-        return Err(empty_operation_failure(
-            SkillOperationError::AlreadyPromoted {
-                name: skill_name.to_string(),
-            },
-        ));
-    }
 
     let canonical_root = canonicalize_existing_ancestor(&roots.canonical_root)
         .map_err(SkillOperationError::Io)
@@ -2431,6 +2564,9 @@ impl fmt::Display for SkillOperationError {
             Self::AlreadyPromoted { name } => {
                 write!(formatter, "import `{name}` has already been promoted")
             }
+            Self::NotPromoted { name } => {
+                write!(formatter, "import `{name}` has not been promoted")
+            }
             Self::Io(error) => write!(formatter, "{error}"),
             Self::Serialize(error) => write!(formatter, "{error}"),
         }
@@ -2448,7 +2584,8 @@ impl std::error::Error for SkillOperationError {
             | Self::UnsafeAgentEntry { .. }
             | Self::Collision { .. }
             | Self::EnabledImport { .. }
-            | Self::AlreadyPromoted { .. } => None,
+            | Self::AlreadyPromoted { .. }
+            | Self::NotPromoted { .. } => None,
         }
     }
 }

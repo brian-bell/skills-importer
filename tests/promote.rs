@@ -6,8 +6,9 @@ use std::process::Command;
 use serde_json::Value;
 use skill_importer::{
     DiscoveryRoots, EnableSkillRequest, ImportLocalPathRequest, ImportMarkdownRequest,
-    PromoteSkillRequest, SkillActionKind, SkillAgent, SkillOperationError, enable_skill,
-    import_local_path_skill, import_markdown_skill, promote_imported_skill,
+    PromoteSkillRequest, SkillActionKind, SkillAgent, SkillOperationError, UnpromoteSkillRequest,
+    enable_skill, import_local_path_skill, import_markdown_skill, promote_imported_skill,
+    unpromote_imported_skill,
 };
 
 #[test]
@@ -131,6 +132,65 @@ fn promotion_relinks_enabled_import_symlinks_to_canonical_skill() {
             .iter()
             .any(|action| action.action == SkillActionKind::CreateSymlink
                 && action.target == Some(canonical.clone()))
+    );
+}
+
+#[test]
+fn unpromotion_removes_canonical_copy_marks_import_draft_and_relinks_enabled_agents() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = roots(temp.path());
+    let import = import_markdown(&roots, "enabled-helper");
+    enable_skill(
+        &roots,
+        EnableSkillRequest {
+            skill_name: "enabled-helper",
+            agents: &[SkillAgent::ClaudeCode, SkillAgent::Codex],
+        },
+    )
+    .expect("enable both");
+    promote_imported_skill(
+        &roots,
+        PromoteSkillRequest {
+            skill_name: "enabled-helper",
+        },
+    )
+    .expect("promote succeeds");
+
+    let result = unpromote_imported_skill(
+        &roots,
+        UnpromoteSkillRequest {
+            skill_name: "enabled-helper",
+        },
+    )
+    .expect("unpromote succeeds");
+
+    assert!(!roots.canonical_root.join("enabled-helper").exists());
+    let manifest = read_manifest(
+        &roots
+            .imports_root
+            .join("enabled-helper")
+            .join("import.json"),
+    );
+    assert_eq!(manifest["promoted"], false);
+    assert_eq!(
+        fs::canonicalize(roots.claude_code_root.join("enabled-helper")).expect("claude target"),
+        import.skill_path
+    );
+    assert_eq!(
+        fs::canonicalize(roots.codex_root.join("enabled-helper")).expect("codex target"),
+        import.skill_path
+    );
+    assert!(
+        result
+            .actions
+            .iter()
+            .any(|action| action.action == SkillActionKind::RemoveDirectory)
+    );
+    assert!(
+        result
+            .actions
+            .iter()
+            .any(|action| action.action == SkillActionKind::WriteManifest)
     );
 }
 

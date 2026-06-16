@@ -5,9 +5,9 @@ use crate::{
     ImportLocalPathRequest, ImportMarkdownRequest, ImportRepositoryRequest, ImportResult,
     ImportUrlRequest, PromoteSkillRequest, RepositoryImportResult, SkillAgent, SkillInventory,
     SkillOperationFailure, SkillOperationResult, SkillRepositoryProvider, SkillUrlFetcher,
-    delete_unpromoted_import, disable_skill, discover_skills, enable_skill,
+    UnpromoteSkillRequest, delete_unpromoted_import, disable_skill, discover_skills, enable_skill,
     import_local_path_skill, import_markdown_skill, import_repository_skill, import_url_skill,
-    promote_imported_skill,
+    promote_imported_skill, unpromote_imported_skill,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,6 +26,7 @@ pub enum OperationRequest<'request> {
         agents: &'request [SkillAgent],
     },
     Promote(PromoteSkillRequest<'request>),
+    Unpromote(UnpromoteSkillRequest<'request>),
     Delete(DeleteImportRequest<'request>),
 }
 
@@ -79,6 +80,9 @@ pub fn execute(
                 .map_err(OperationError::SkillOperation)
         }
         OperationRequest::Promote(request) => promote_imported_skill(roots, request)
+            .map(OperationOutcome::SkillOperation)
+            .map_err(OperationError::SkillOperation),
+        OperationRequest::Unpromote(request) => unpromote_imported_skill(roots, request)
             .map(OperationOutcome::SkillOperation)
             .map_err(OperationError::SkillOperation),
         OperationRequest::Delete(request) => delete_unpromoted_import(roots, request)

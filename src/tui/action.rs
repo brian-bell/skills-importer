@@ -40,6 +40,7 @@ pub enum SelectionDelta {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfirmationOperation {
     Promote,
+    Unpromote,
     Delete,
 }
 
@@ -62,6 +63,9 @@ pub enum AppOperationRequest {
         agent: SkillAgent,
     },
     PromoteSkill {
+        skill_name: String,
+    },
+    UnpromoteSkill {
         skill_name: String,
     },
     DeleteImport {
@@ -88,6 +92,7 @@ impl AppOperationRequest {
             AppOperationRequest::EnableSkill { .. } => "enable",
             AppOperationRequest::DisableSkill { .. } => "disable",
             AppOperationRequest::PromoteSkill { .. } => "promote",
+            AppOperationRequest::UnpromoteSkill { .. } => "unpromote",
             AppOperationRequest::DeleteImport { .. } => "delete",
             AppOperationRequest::ImportMarkdown { .. } => "import markdown",
             AppOperationRequest::ImportPath { .. } => "import path",
@@ -101,6 +106,7 @@ impl AppOperationRequest {
             AppOperationRequest::EnableSkill { skill_name, .. }
             | AppOperationRequest::DisableSkill { skill_name, .. }
             | AppOperationRequest::PromoteSkill { skill_name }
+            | AppOperationRequest::UnpromoteSkill { skill_name }
             | AppOperationRequest::DeleteImport { skill_name } => Some(skill_name.as_str()),
             AppOperationRequest::ImportMarkdown { .. }
             | AppOperationRequest::ImportPath { .. }
