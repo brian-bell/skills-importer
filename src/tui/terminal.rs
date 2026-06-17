@@ -94,8 +94,8 @@ fn run_event_loop(
 fn prepare_action(roots: &DiscoveryRoots, state: &AppState, action: AppAction) -> AppAction {
     if action == AppAction::BeginConfirmation(super::ConfirmationOperation::Promote)
         && let Some(skill) = state.selected_detail()
-        && skill.source == crate::SkillSource::Imported
         && !skill.promoted
+        && draft_import_manifest_exists(&roots.imports_root.join(&skill.name))
         && promoted_destination_is_directory(&roots.canonical_root.join(&skill.name))
     {
         return AppAction::BeginConfirmation(super::ConfirmationOperation::PromoteOverwrite);
@@ -106,6 +106,10 @@ fn prepare_action(roots: &DiscoveryRoots, state: &AppState, action: AppAction) -
 
 fn promoted_destination_is_directory(path: &Path) -> bool {
     fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_dir())
+}
+
+fn draft_import_manifest_exists(import_path: &Path) -> bool {
+    fs::metadata(import_path.join("import.json")).is_ok_and(|metadata| metadata.is_file())
 }
 
 fn handle_action<B: Backend>(
@@ -646,10 +650,38 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let roots = roots(temp.path());
         write_skill(&roots.canonical_root, "alpha", "Existing promoted skill.");
+        write_skill(&roots.imports_root, "alpha", "Imported draft.");
+        write_import_manifest(&roots.imports_root.join("alpha"), false);
         let state = AppState::new(SkillInventory {
             skills: vec![skill("alpha", "Imported draft.", SkillSource::Imported)],
             source_repositories: Vec::new(),
         });
+
+        let action = prepare_action(
+            &roots,
+            &state,
+            AppAction::BeginConfirmation(crate::tui::ConfirmationOperation::Promote),
+        );
+
+        assert_eq!(
+            action,
+            AppAction::BeginConfirmation(crate::tui::ConfirmationOperation::PromoteOverwrite)
+        );
+    }
+
+    #[test]
+    fn prepare_action_uses_overwrite_confirmation_for_canonical_precedence_draft_import() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let roots = roots(temp.path());
+        write_skill(&roots.canonical_root, "alpha", "Existing promoted skill.");
+        let imported = roots.imports_root.join("alpha");
+        write_skill(&roots.imports_root, "alpha", "Imported draft.");
+        write_import_manifest(&imported, false);
+        let inventory = discover_skills(&roots).expect("inventory");
+        assert_eq!(inventory.skills.len(), 1);
+        assert_eq!(inventory.skills[0].source, SkillSource::Canonical);
+        assert!(!inventory.skills[0].promoted);
+        let state = AppState::new(inventory);
 
         let action = prepare_action(
             &roots,
@@ -691,6 +723,8 @@ mod tests {
         let roots = roots(temp.path());
         fs::create_dir_all(&roots.canonical_root).expect("canonical root");
         fs::write(roots.canonical_root.join("alpha"), "not a skill dir").expect("file collision");
+        write_skill(&roots.imports_root, "alpha", "Imported draft.");
+        write_import_manifest(&roots.imports_root.join("alpha"), false);
         let state = AppState::new(SkillInventory {
             skills: vec![skill("alpha", "Imported draft.", SkillSource::Imported)],
             source_repositories: Vec::new(),
@@ -719,6 +753,8 @@ mod tests {
             roots.canonical_root.join("alpha"),
         )
         .expect("broken symlink");
+        write_skill(&roots.imports_root, "alpha", "Imported draft.");
+        write_import_manifest(&roots.imports_root.join("alpha"), false);
         let state = AppState::new(SkillInventory {
             skills: vec![skill("alpha", "Imported draft.", SkillSource::Imported)],
             source_repositories: Vec::new(),
@@ -971,6 +1007,22 @@ description: {description}
             ),
         )
         .expect("skill file");
+    }
+
+    fn write_import_manifest(skill_path: &Path, promoted: bool) {
+        fs::write(
+            skill_path.join("import.json"),
+            format!(
+                r#"{{
+  "source_type": "markdown",
+  "source_location": null,
+  "imported_at": 1,
+  "content_hash": "sha256:test",
+  "promoted": {promoted}
+}}"#
+            ),
+        )
+        .expect("import manifest");
     }
 
     fn skill(name: &str, description: &str, source: SkillSource) -> SkillEntry {
