@@ -25,6 +25,7 @@ fn workflow_list_outcome_renders_existing_inventory_json_shape() {
         workflow::OperationRequest::List,
         &UnusedFetcher,
         &UnusedRepositoryProvider,
+        &skill_importer::promotion_pr::NoopPromotionPrLauncher,
     )
     .expect("workflow list succeeds");
 
@@ -55,6 +56,7 @@ description: Imported through workflow.
         }),
         &UnusedFetcher,
         &UnusedRepositoryProvider,
+        &skill_importer::promotion_pr::NoopPromotionPrLauncher,
     )
     .expect("workflow import succeeds");
 
@@ -66,6 +68,7 @@ description: Imported through workflow.
         },
         &UnusedFetcher,
         &UnusedRepositoryProvider,
+        &skill_importer::promotion_pr::NoopPromotionPrLauncher,
     )
     .expect("workflow enable succeeds");
 
@@ -86,6 +89,7 @@ fn json_adapter_writes_pretty_json_with_trailing_newline() {
         workflow::OperationRequest::List,
         &UnusedFetcher,
         &UnusedRepositoryProvider,
+        &skill_importer::promotion_pr::NoopPromotionPrLauncher,
     )
     .expect("workflow list succeeds");
 
@@ -116,6 +120,7 @@ fn json_adapter_preserves_existing_byte_order_for_list_and_effectful_results() {
         workflow::OperationRequest::List,
         &UnusedFetcher,
         &UnusedRepositoryProvider,
+        &skill_importer::promotion_pr::NoopPromotionPrLauncher,
     )
     .expect("workflow list succeeds");
 
@@ -152,6 +157,7 @@ description: Imported through URL workflow.
 "#,
         },
         &UnusedRepositoryProvider,
+        &skill_importer::promotion_pr::NoopPromotionPrLauncher,
     )
     .expect("workflow url import succeeds");
     let mut import_output = Vec::new();
@@ -195,6 +201,7 @@ description: Fetched through workflow.
         }),
         &fetcher,
         &UnusedRepositoryProvider,
+        &skill_importer::promotion_pr::NoopPromotionPrLauncher,
     )
     .expect("workflow url import succeeds");
 
@@ -231,6 +238,7 @@ fn workflow_import_repository_uses_injected_provider_and_preserves_selection() {
         }),
         &UnusedFetcher,
         &provider,
+        &skill_importer::promotion_pr::NoopPromotionPrLauncher,
     )
     .expect("workflow repository selection succeeds");
 

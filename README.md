@@ -13,6 +13,8 @@ Codex skills.
   directories, broken symlinks, unmanaged files, or missing entries.
 - Import skills from Markdown, local paths, URLs, and repositories.
 - Enable, disable, promote, and delete skills with filesystem safety checks.
+- Promote imported skills into the `agent-skills` third-party catalog and hand
+  off PR preparation to headless Codex in Terminal.
 - Run a JSON automation interface or an interactive ratatui terminal UI.
 
 Internally, resolved operations flow through a shared workflow module, and the
@@ -69,6 +71,7 @@ skill-importer import url --json --url https://example.test/skill.md
 skill-importer enable --json --skill my-skill --agent codex
 skill-importer disable --json --skill my-skill --agent claude-code
 skill-importer promote --json --skill my-imported-skill
+skill-importer promote --json --skill my-imported-skill --skills-repo /path/to/agent-skills
 skill-importer delete --json --skill my-unpromoted-import
 ```
 
@@ -91,6 +94,16 @@ Repository imports persist structured `source_repository` metadata in each
 import manifest. `skill-importer list --json` includes that metadata on imported
 skill entries and derives a top-level `source_repositories` list grouping
 repository-imported skills by repository.
+
+Promotion copies the imported skill directory to
+`<agent-skills-repo>/third-party/<skill-name>`, excluding the managed top-level
+`import.json`. The default agent-skills checkout is
+`/Users/brian/dev/agent-skills`; override it with `--skills-repo` or
+`SKILL_IMPORTER_SKILLS_REPO`. After copying, promotion launches a macOS
+Terminal script that runs `codex exec` in the agent-skills checkout with a PR
+handoff prompt covering docs, installer updates, attribution, available
+analysis reports, checks, commit, push, and PR creation. If launch preparation
+fails, the import manifest is not marked promoted.
 
 ## TUI
 

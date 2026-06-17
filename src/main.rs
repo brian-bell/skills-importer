@@ -10,9 +10,9 @@ mod cli;
 use cli::{Command, RootDefaults};
 use skill_importer::{
     DeleteImportRequest, DiscoveryRoots, ImportLocalPathRequest, ImportMarkdownRequest,
-    ImportUrlRequest, PromoteSkillRequest, SkillRepositoryCheckout, SkillRepositoryFetchError,
-    SkillRepositoryProvider, SkillUrlFetchError, SkillUrlFetcher, analyzer, json_adapter,
-    tui::run_tui, workflow,
+    ImportUrlRequest, PromoteSkillOptions, PromoteSkillRequest, SkillRepositoryCheckout,
+    SkillRepositoryFetchError, SkillRepositoryProvider, SkillUrlFetchError, SkillUrlFetcher,
+    analyzer, json_adapter, promotion_pr::TerminalPromotionPrLauncher, tui::run_tui, workflow,
 };
 
 const MAX_SKILL_MARKDOWN_BYTES: u64 = 1024 * 1024;
@@ -59,6 +59,7 @@ fn run_with_services_with_defaults(
 ) -> Result<(), String> {
     let command = cli::parse_command(args, defaults)?;
     let repository_provider = UnavailableRepositoryProvider;
+    let promotion_launcher = TerminalPromotionPrLauncher;
 
     match command {
         Command::Help { message } => stdout
@@ -70,6 +71,7 @@ fn run_with_services_with_defaults(
                 workflow::OperationRequest::List,
                 url_fetcher,
                 &repository_provider,
+                &promotion_launcher,
             )
             .map_err(|error| format!("failed to discover skills: {error}"))?;
             write_json_outcome(&mut stdout, &outcome)
@@ -90,6 +92,7 @@ fn run_with_services_with_defaults(
                 }),
                 url_fetcher,
                 &repository_provider,
+                &promotion_launcher,
             )
             .map_err(|error| format!("failed to import Markdown: {error}"))?;
             write_json_outcome(&mut stdout, &outcome)
@@ -102,6 +105,7 @@ fn run_with_services_with_defaults(
                 }),
                 url_fetcher,
                 &repository_provider,
+                &promotion_launcher,
             )
             .map_err(|error| format!("failed to import path: {error}"))?;
             write_json_outcome(&mut stdout, &outcome)
@@ -112,6 +116,7 @@ fn run_with_services_with_defaults(
                 workflow::OperationRequest::ImportUrl(ImportUrlRequest { url: url.as_str() }),
                 url_fetcher,
                 &repository_provider,
+                &promotion_launcher,
             )
             .map_err(|error| format!("failed to import URL: {error}"))?;
             write_json_outcome(&mut stdout, &outcome)
@@ -129,6 +134,7 @@ fn run_with_services_with_defaults(
                 },
                 url_fetcher,
                 &repository_provider,
+                &promotion_launcher,
             )
             .map_err(|error| format!("failed to enable skill: {error}"))?;
             write_json_outcome(&mut stdout, &outcome)
@@ -146,18 +152,29 @@ fn run_with_services_with_defaults(
                 },
                 url_fetcher,
                 &repository_provider,
+                &promotion_launcher,
             )
             .map_err(|error| format!("failed to disable skill: {error}"))?;
             write_json_outcome(&mut stdout, &outcome)
         }
-        Command::Promote { roots, skill_name } => {
+        Command::Promote {
+            roots,
+            skill_name,
+            skills_repo,
+        } => {
             let outcome = workflow::execute(
                 &roots,
-                workflow::OperationRequest::Promote(PromoteSkillRequest {
-                    skill_name: skill_name.as_str(),
-                }),
+                workflow::OperationRequest::Promote {
+                    request: PromoteSkillRequest {
+                        skill_name: skill_name.as_str(),
+                    },
+                    options: PromoteSkillOptions {
+                        skills_repo: skills_repo.as_path(),
+                    },
+                },
                 url_fetcher,
                 &repository_provider,
+                &promotion_launcher,
             )
             .map_err(|error| format!("failed to promote skill: {error}"))?;
             write_json_outcome(&mut stdout, &outcome)
@@ -170,6 +187,7 @@ fn run_with_services_with_defaults(
                 }),
                 url_fetcher,
                 &repository_provider,
+                &promotion_launcher,
             )
             .map_err(|error| format!("failed to delete import: {error}"))?;
             write_json_outcome(&mut stdout, &outcome)

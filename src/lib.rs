@@ -15,8 +15,14 @@ use std::os::windows::ffi::OsStrExt;
 
 pub mod analyzer;
 pub mod json_adapter;
+pub mod promotion_pr;
 pub mod tui;
 pub mod workflow;
+
+use promotion_pr::{
+    NoopPromotionPrLauncher, PromotePrLaunchRequest, PromotionPrLauncher, default_skills_repo,
+    discover_analysis_reports,
+};
 
 mod skill_store;
 
@@ -141,6 +147,11 @@ pub struct DisableSkillRequest<'request> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PromoteSkillRequest<'request> {
     pub skill_name: &'request str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PromoteSkillOptions<'request> {
+    pub skills_repo: &'request Path,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -282,6 +293,7 @@ pub enum SkillActionKind {
     CreateSymlink,
     RemoveSymlink,
     CopyFile,
+    LaunchPromotionPrWorkflow,
     WriteManifest,
     RemoveDirectory,
     SkipUnchanged,
@@ -308,6 +320,7 @@ pub enum SkillOperationError {
     EnabledImport { name: String, path: PathBuf },
     AlreadyPromoted { name: String },
     NotPromoted { name: String },
+    PromotionPrLaunch { message: String },
     Io(io::Error),
     Serialize(serde_json::Error),
 }
@@ -689,26 +702,68 @@ pub fn promote_imported_skill(
     roots: &DiscoveryRoots,
     request: PromoteSkillRequest<'_>,
 ) -> Result<SkillOperationResult, SkillOperationFailure> {
-    let mut plan = preflight_promotion(roots, request.skill_name)?;
+    let skills_repo = default_skills_repo();
+    let launcher = NoopPromotionPrLauncher;
+    promote_imported_skill_with_launcher(
+        roots,
+        request,
+        PromoteSkillOptions {
+            skills_repo: skills_repo.as_path(),
+        },
+        &launcher,
+    )
+}
+
+pub fn promote_imported_skill_with_launcher(
+    roots: &DiscoveryRoots,
+    request: PromoteSkillRequest<'_>,
+    options: PromoteSkillOptions<'_>,
+    launcher: &impl PromotionPrLauncher,
+) -> Result<SkillOperationResult, SkillOperationFailure> {
+    let mut plan = preflight_promotion(roots, request.skill_name, options.skills_repo)?;
     let mut actions = Vec::new();
 
-    create_directory_if_missing(plan.canonical_root.as_path(), None, &mut actions)?;
-    fs::create_dir(&plan.canonical_path)
+    create_directory_if_missing(plan.third_party_root.as_path(), None, &mut actions)?;
+    fs::create_dir(&plan.promoted_path)
         .map_err(SkillOperationError::Io)
         .map_err(|error| operation_failure(error, actions.clone()))?;
     actions.push(SkillAction {
         action: SkillActionKind::CreateDirectory,
         agent: None,
-        path: plan.canonical_path.clone(),
+        path: plan.promoted_path.clone(),
         target: None,
         source: Some(plan.import_path.clone()),
     });
     copy_operation_skill_directory(
         &plan.import_path,
-        &plan.canonical_path,
+        &plan.promoted_path,
         CopyMetadataPolicy::ExcludeTopLevelImportManifest,
         &mut actions,
     )?;
+
+    let launch_request = PromotePrLaunchRequest {
+        skill_name: plan.skill_name.clone(),
+        skills_repo: options.skills_repo.to_path_buf(),
+        promoted_skill_path: plan.promoted_path.clone(),
+        import_manifest: plan.manifest.clone(),
+        analysis_reports: discover_analysis_reports(&plan.skill_name),
+    };
+    match launcher.launch(launch_request) {
+        Ok(result) => actions.push(SkillAction {
+            action: SkillActionKind::LaunchPromotionPrWorkflow,
+            agent: None,
+            path: result.script_path,
+            target: Some(result.prompt_path),
+            source: Some(plan.promoted_path.clone()),
+        }),
+        Err(message) => {
+            let _ = fs::remove_dir_all(&plan.promoted_path);
+            return Err(operation_failure(
+                SkillOperationError::PromotionPrLaunch { message },
+                actions,
+            ));
+        }
+    }
 
     plan.manifest.promoted = true;
     write_operation_import_manifest(&plan.manifest_path, &plan.manifest, &mut actions)?;
@@ -724,14 +779,14 @@ pub fn promote_imported_skill(
             target: Some(plan.import_path.clone()),
             source: None,
         });
-        create_symlink(&plan.canonical_path, &relink.path)
+        create_symlink(&plan.promoted_path, &relink.path)
             .map_err(SkillOperationError::Io)
             .map_err(|error| operation_failure(error, actions.clone()))?;
         actions.push(SkillAction {
             action: SkillActionKind::CreateSymlink,
             agent: Some(relink.agent),
             path: relink.path,
-            target: Some(plan.canonical_path.clone()),
+            target: Some(plan.promoted_path.clone()),
             source: None,
         });
     }
@@ -1245,8 +1300,8 @@ enum AgentMutationState {
 struct PromotionPlan {
     skill_name: String,
     import_path: PathBuf,
-    canonical_root: PathBuf,
-    canonical_path: PathBuf,
+    third_party_root: PathBuf,
+    promoted_path: PathBuf,
     manifest_path: PathBuf,
     manifest: ImportManifest,
     relinks: Vec<AgentRelinkPlan>,
@@ -1292,9 +1347,12 @@ enum CopyMetadataPolicy {
 fn preflight_promotion(
     roots: &DiscoveryRoots,
     skill_name: &str,
+    skills_repo: &Path,
 ) -> Result<PromotionPlan, SkillOperationFailure> {
     let preflight = resolve_draft_import_preflight(roots, skill_name)?;
-    ensure_canonical_destination_available(skill_name, &preflight.canonical_path)?;
+    let third_party_root = skills_repo.join("third-party");
+    let promoted_path = third_party_root.join(skill_name);
+    ensure_destination_available(skill_name, &promoted_path)?;
 
     let mut relinks = Vec::new();
     for agent in [SkillAgent::ClaudeCode, SkillAgent::Codex] {
@@ -1311,8 +1369,8 @@ fn preflight_promotion(
     Ok(PromotionPlan {
         skill_name: skill_name.to_string(),
         import_path: preflight.import_path,
-        canonical_root: preflight.canonical_root,
-        canonical_path: preflight.canonical_path,
+        third_party_root,
+        promoted_path,
         manifest_path: preflight.manifest_path,
         manifest: preflight.manifest,
         relinks,
@@ -1473,15 +1531,15 @@ fn resolve_any_import_preflight(
     })
 }
 
-fn ensure_canonical_destination_available(
+fn ensure_destination_available(
     skill_name: &str,
-    canonical_path: &Path,
+    destination_path: &Path,
 ) -> Result<(), SkillOperationFailure> {
-    match fs::symlink_metadata(canonical_path) {
+    match fs::symlink_metadata(destination_path) {
         Ok(_) => {
             return Err(empty_operation_failure(SkillOperationError::Collision {
                 name: skill_name.to_string(),
-                path: canonical_path.to_path_buf(),
+                path: destination_path.to_path_buf(),
             }));
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -2622,6 +2680,12 @@ impl fmt::Display for SkillOperationError {
             Self::NotPromoted { name } => {
                 write!(formatter, "import `{name}` has not been promoted")
             }
+            Self::PromotionPrLaunch { message } => {
+                write!(
+                    formatter,
+                    "failed to launch promotion PR workflow: {message}"
+                )
+            }
             Self::Io(error) => write!(formatter, "{error}"),
             Self::Serialize(error) => write!(formatter, "{error}"),
         }
@@ -2640,7 +2704,8 @@ impl std::error::Error for SkillOperationError {
             | Self::Collision { .. }
             | Self::EnabledImport { .. }
             | Self::AlreadyPromoted { .. }
-            | Self::NotPromoted { .. } => None,
+            | Self::NotPromoted { .. }
+            | Self::PromotionPrLaunch { .. } => None,
         }
     }
 }

@@ -3,11 +3,12 @@ use std::{fmt, io};
 use crate::{
     DeleteImportRequest, DisableSkillRequest, DiscoveryRoots, EnableSkillRequest, ImportError,
     ImportLocalPathRequest, ImportMarkdownRequest, ImportRepositoryRequest, ImportResult,
-    ImportUrlRequest, PromoteSkillRequest, RepositoryImportResult, SkillAgent, SkillInventory,
-    SkillOperationFailure, SkillOperationResult, SkillRepositoryProvider, SkillUrlFetcher,
-    UnpromoteSkillRequest, delete_unpromoted_import, disable_skill, discover_skills, enable_skill,
-    import_local_path_skill, import_markdown_skill, import_repository_skill, import_url_skill,
-    promote_imported_skill, unpromote_imported_skill,
+    ImportUrlRequest, PromoteSkillOptions, PromoteSkillRequest, RepositoryImportResult, SkillAgent,
+    SkillInventory, SkillOperationFailure, SkillOperationResult, SkillRepositoryProvider,
+    SkillUrlFetcher, UnpromoteSkillRequest, delete_unpromoted_import, disable_skill,
+    discover_skills, enable_skill, import_local_path_skill, import_markdown_skill,
+    import_repository_skill, import_url_skill, promote_imported_skill_with_launcher,
+    promotion_pr::PromotionPrLauncher, unpromote_imported_skill,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,7 +26,10 @@ pub enum OperationRequest<'request> {
         skill_name: &'request str,
         agents: &'request [SkillAgent],
     },
-    Promote(PromoteSkillRequest<'request>),
+    Promote {
+        request: PromoteSkillRequest<'request>,
+        options: PromoteSkillOptions<'request>,
+    },
     Unpromote(UnpromoteSkillRequest<'request>),
     Delete(DeleteImportRequest<'request>),
 }
@@ -50,6 +54,7 @@ pub fn execute(
     request: OperationRequest<'_>,
     url_fetcher: &impl SkillUrlFetcher,
     repository_provider: &impl SkillRepositoryProvider,
+    promotion_launcher: &impl PromotionPrLauncher,
 ) -> Result<OperationOutcome, OperationError> {
     match request {
         OperationRequest::List => discover_skills(roots)
@@ -79,9 +84,11 @@ pub fn execute(
                 .map(OperationOutcome::SkillOperation)
                 .map_err(OperationError::SkillOperation)
         }
-        OperationRequest::Promote(request) => promote_imported_skill(roots, request)
-            .map(OperationOutcome::SkillOperation)
-            .map_err(OperationError::SkillOperation),
+        OperationRequest::Promote { request, options } => {
+            promote_imported_skill_with_launcher(roots, request, options, promotion_launcher)
+                .map(OperationOutcome::SkillOperation)
+                .map_err(OperationError::SkillOperation)
+        }
         OperationRequest::Unpromote(request) => unpromote_imported_skill(roots, request)
             .map(OperationOutcome::SkillOperation)
             .map_err(OperationError::SkillOperation),

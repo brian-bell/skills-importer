@@ -6,9 +6,9 @@ use std::process::Command;
 use serde_json::Value;
 use skill_importer::{
     DeleteImportRequest, DiscoveryRoots, EnableSkillRequest, ImportMarkdownRequest,
-    PromoteSkillRequest, SkillActionKind, SkillAgent, SkillOperationError, UnpromoteSkillRequest,
+    SkillActionKind, SkillAgent, SkillOperationError, UnpromoteSkillRequest,
     delete_unpromoted_import, discover_skills, enable_skill, import_markdown_skill,
-    promote_imported_skill, unpromote_imported_skill,
+    unpromote_imported_skill,
 };
 
 #[test]
@@ -46,13 +46,8 @@ fn promoted_import_can_be_unpromoted_then_deleted() {
     let temp = tempfile::tempdir().expect("tempdir");
     let roots = roots(temp.path());
     import_markdown(&roots, "delete-promoted-helper");
-    promote_imported_skill(
-        &roots,
-        PromoteSkillRequest {
-            skill_name: "delete-promoted-helper",
-        },
-    )
-    .expect("promote");
+    write_skill(&roots.canonical_root, "delete-promoted-helper");
+    mark_promoted(&roots, "delete-promoted-helper", true);
 
     unpromote_imported_skill(
         &roots,
@@ -156,13 +151,7 @@ fn delete_reports_unknown_canonical_agent_only_and_promoted_imports() {
     ));
 
     import_markdown(&roots, "promoted-helper");
-    promote_imported_skill(
-        &roots,
-        PromoteSkillRequest {
-            skill_name: "promoted-helper",
-        },
-    )
-    .expect("promote");
+    mark_promoted(&roots, "promoted-helper", true);
     let promoted = delete_unpromoted_import(
         &roots,
         DeleteImportRequest {
@@ -293,6 +282,18 @@ fn import_markdown(roots: &DiscoveryRoots, name: &str) -> skill_importer::Import
         },
     )
     .expect("import markdown")
+}
+
+fn mark_promoted(roots: &DiscoveryRoots, name: &str, promoted: bool) {
+    let path = roots.imports_root.join(name).join("import.json");
+    let mut manifest: Value =
+        serde_json::from_str(&fs::read_to_string(&path).expect("manifest")).expect("manifest json");
+    manifest["promoted"] = Value::Bool(promoted);
+    fs::write(
+        path,
+        serde_json::to_vec_pretty(&manifest).expect("manifest json"),
+    )
+    .expect("write manifest");
 }
 
 fn skill_markdown(name: &str) -> String {

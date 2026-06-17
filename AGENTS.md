@@ -64,6 +64,14 @@ can mutate user-level skill symlinks.
 - Imports support Markdown from stdin, local path imports, URL imports, and
   repository imports. Repository imports can return an interactive multi-skill
   selection.
+- Promotion copies imported skills into
+  `<agent-skills-repo>/third-party/<skill-name>` instead of the local canonical
+  root. The repo defaults to `/Users/brian/dev/agent-skills` and can be
+  overridden with `--skills-repo` or `SKILL_IMPORTER_SKILLS_REPO`.
+- Successful promotion launches a macOS Terminal handoff that runs headless
+  Codex in the agent-skills checkout to prepare docs, installer, attribution,
+  checks, commit, push, and PR creation. Launch failure leaves the local import
+  manifest unpromoted.
 - JSON commands expose Markdown, path, and URL imports; repository import is
   exposed through the core library and TUI.
 - Enable/disable, promote, and delete operations keep filesystem safety checks

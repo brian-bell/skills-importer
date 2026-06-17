@@ -3,7 +3,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use clap::{ArgAction, Args, Parser, Subcommand};
-use skill_importer::{DiscoveryRoots, SkillAgent};
+use skill_importer::{DiscoveryRoots, SkillAgent, promotion_pr::default_skills_repo};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Command {
@@ -38,6 +38,7 @@ pub(crate) enum Command {
     Promote {
         roots: DiscoveryRoots,
         skill_name: String,
+        skills_repo: PathBuf,
     },
     Delete {
         roots: DiscoveryRoots,
@@ -102,7 +103,7 @@ enum CliCommand {
     },
     Enable(SkillAgentsArgs),
     Disable(SkillAgentsArgs),
-    Promote(SkillNameArgs),
+    Promote(PromoteArgs),
     Delete(SkillNameArgs),
     #[command(hide = true)]
     RenderAnalysisReport(RenderAnalysisReportArgs),
@@ -121,7 +122,7 @@ impl CliCommand {
             Self::Import { kind } => kind.into_command(defaults),
             Self::Enable(args) => args.into_command(defaults, EnableDisableCommand::Enable),
             Self::Disable(args) => args.into_command(defaults, EnableDisableCommand::Disable),
-            Self::Promote(args) => args.into_command(defaults, SkillCommand::Promote),
+            Self::Promote(args) => args.into_command(defaults),
             Self::Delete(args) => args.into_command(defaults, SkillCommand::Delete),
             Self::RenderAnalysisReport(args) => args.into_command(),
             Self::Tui(args) => Ok(Command::Tui {
@@ -293,10 +294,33 @@ struct SkillNameArgs {
     skill: Vec<OsString>,
 }
 
+#[derive(Debug, Args)]
+struct PromoteArgs {
+    #[command(flatten)]
+    skill: SkillNameArgs,
+    #[arg(long, value_name = "PATH", allow_hyphen_values = true)]
+    skills_repo: Vec<PathBuf>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SkillCommand {
-    Promote,
     Delete,
+}
+
+impl PromoteArgs {
+    fn into_command(self, defaults: &RootDefaults) -> Result<Command, String> {
+        self.skill.json_roots.require_json("promote")?;
+        let roots = self.skill.json_roots.roots.into_discovery_roots(defaults)?;
+        let skill_name =
+            last_string(&self.skill.skill).ok_or_else(|| "promote requires --skill".to_string())?;
+        let skills_repo = last_path(&self.skills_repo).unwrap_or_else(default_skills_repo);
+
+        Ok(Command::Promote {
+            roots,
+            skill_name,
+            skills_repo,
+        })
+    }
 }
 
 impl SkillNameArgs {
@@ -306,7 +330,6 @@ impl SkillNameArgs {
         command: SkillCommand,
     ) -> Result<Command, String> {
         let command_name = match command {
-            SkillCommand::Promote => "promote",
             SkillCommand::Delete => "delete",
         };
         self.json_roots.require_json(command_name)?;
@@ -316,7 +339,6 @@ impl SkillNameArgs {
             last_string(&self.skill).ok_or_else(|| format!("{command_name} requires --skill"))?;
 
         match command {
-            SkillCommand::Promote => Ok(Command::Promote { roots, skill_name }),
             SkillCommand::Delete => Ok(Command::Delete { roots, skill_name }),
         }
     }
@@ -819,6 +841,8 @@ mod tests {
                     OsString::from("--json"),
                     OsString::from("--skill"),
                     OsString::from("skill-name"),
+                    OsString::from("--skills-repo"),
+                    OsString::from("/tmp/agent-skills"),
                 ],
                 &defaults(temp.path()),
             )
@@ -826,6 +850,7 @@ mod tests {
             Command::Promote {
                 roots: default_roots(temp.path()),
                 skill_name: "skill-name".to_string(),
+                skills_repo: PathBuf::from("/tmp/agent-skills"),
             }
         );
 

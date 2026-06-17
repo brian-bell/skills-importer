@@ -6,8 +6,10 @@ use std::process::Command;
 use serde_json::Value;
 use skill_importer::{
     DiscoveryRoots, EnableSkillRequest, ImportLocalPathRequest, ImportMarkdownRequest,
-    PromoteSkillRequest, SkillActionKind, SkillAgent, SkillOperationError, UnpromoteSkillRequest,
-    enable_skill, import_local_path_skill, import_markdown_skill, promote_imported_skill,
+    PromoteSkillOptions, PromoteSkillRequest, SkillActionKind, SkillAgent, SkillOperationError,
+    UnpromoteSkillRequest, enable_skill, import_local_path_skill, import_markdown_skill,
+    promote_imported_skill_with_launcher,
+    promotion_pr::{PromotePrLaunchRequest, PromotePrLaunchResult, PromotionPrLauncher},
     unpromote_imported_skill,
 };
 
@@ -15,30 +17,33 @@ use skill_importer::{
 fn promotion_copies_imported_skill_without_import_manifest_and_marks_import_promoted() {
     let temp = tempfile::tempdir().expect("tempdir");
     let roots = roots(temp.path());
+    let skills_repo = skills_repo(temp.path());
     import_markdown(&roots, "draft-helper");
 
-    let result = promote_imported_skill(
-        &roots,
-        PromoteSkillRequest {
-            skill_name: "draft-helper",
-        },
-    )
-    .expect("promote succeeds");
+    let result = promote(&roots, "draft-helper", &skills_repo, &RecordingLauncher)
+        .expect("promote succeeds");
 
     assert!(
-        roots
-            .canonical_root
+        skills_repo
+            .join("third-party")
             .join("draft-helper")
             .join("SKILL.md")
             .exists()
     );
     assert!(
-        !roots
-            .canonical_root
+        !skills_repo
+            .join("third-party")
             .join("draft-helper")
             .join("import.json")
             .exists(),
-        "managed import metadata should not be copied into canonical skills"
+        "managed import metadata should not be copied into third-party skills"
+    );
+    assert!(
+        roots
+            .imports_root
+            .join("draft-helper")
+            .join("import.json")
+            .exists()
     );
     let manifest = read_manifest(&roots.imports_root.join("draft-helper").join("import.json"));
     assert_eq!(manifest["promoted"], true);
@@ -48,12 +53,19 @@ fn promotion_copies_imported_skill_without_import_manifest_and_marks_import_prom
             .iter()
             .any(|action| action.action == SkillActionKind::WriteManifest)
     );
+    assert!(
+        result
+            .actions
+            .iter()
+            .any(|action| action.action == SkillActionKind::LaunchPromotionPrWorkflow)
+    );
 }
 
 #[test]
 fn promotion_preserves_supporting_files_from_local_imports() {
     let temp = tempfile::tempdir().expect("tempdir");
     let roots = roots(temp.path());
+    let skills_repo = skills_repo(temp.path());
     let source = temp.path().join("source").join("support-helper");
     fs::create_dir_all(source.join("references")).expect("support dir");
     fs::write(source.join("SKILL.md"), skill_markdown("support-helper")).expect("skill file");
@@ -66,18 +78,12 @@ fn promotion_preserves_supporting_files_from_local_imports() {
     )
     .expect("import local path");
 
-    promote_imported_skill(
-        &roots,
-        PromoteSkillRequest {
-            skill_name: "support-helper",
-        },
-    )
-    .expect("promote succeeds");
+    promote(&roots, "support-helper", &skills_repo, &RecordingLauncher).expect("promote succeeds");
 
     assert_eq!(
         fs::read_to_string(
-            roots
-                .canonical_root
+            skills_repo
+                .join("third-party")
                 .join("support-helper")
                 .join("references")
                 .join("notes.md")
@@ -91,6 +97,7 @@ fn promotion_preserves_supporting_files_from_local_imports() {
 fn promotion_relinks_enabled_import_symlinks_to_canonical_skill() {
     let temp = tempfile::tempdir().expect("tempdir");
     let roots = roots(temp.path());
+    let skills_repo = skills_repo(temp.path());
     let import = import_markdown(&roots, "enabled-helper");
     enable_skill(
         &roots,
@@ -101,23 +108,18 @@ fn promotion_relinks_enabled_import_symlinks_to_canonical_skill() {
     )
     .expect("enable both");
 
-    let result = promote_imported_skill(
-        &roots,
-        PromoteSkillRequest {
-            skill_name: "enabled-helper",
-        },
-    )
-    .expect("promote succeeds");
+    let result = promote(&roots, "enabled-helper", &skills_repo, &RecordingLauncher)
+        .expect("promote succeeds");
 
-    let canonical =
-        fs::canonicalize(roots.canonical_root.join("enabled-helper")).expect("canonical target");
+    let promoted = fs::canonicalize(skills_repo.join("third-party").join("enabled-helper"))
+        .expect("promoted target");
     assert_eq!(
         fs::canonicalize(roots.claude_code_root.join("enabled-helper")).expect("claude target"),
-        canonical
+        promoted
     );
     assert_eq!(
         fs::canonicalize(roots.codex_root.join("enabled-helper")).expect("codex target"),
-        canonical
+        promoted
     );
     assert!(
         result
@@ -131,7 +133,7 @@ fn promotion_relinks_enabled_import_symlinks_to_canonical_skill() {
             .actions
             .iter()
             .any(|action| action.action == SkillActionKind::CreateSymlink
-                && action.target == Some(canonical.clone()))
+                && action.target == Some(skills_repo.join("third-party").join("enabled-helper")))
     );
 }
 
@@ -140,6 +142,8 @@ fn unpromotion_removes_canonical_copy_marks_import_draft_and_relinks_enabled_age
     let temp = tempfile::tempdir().expect("tempdir");
     let roots = roots(temp.path());
     let import = import_markdown(&roots, "enabled-helper");
+    let promoted = write_skill(&roots.canonical_root, "enabled-helper");
+    mark_promoted(&roots, "enabled-helper", true);
     enable_skill(
         &roots,
         EnableSkillRequest {
@@ -148,13 +152,12 @@ fn unpromotion_removes_canonical_copy_marks_import_draft_and_relinks_enabled_age
         },
     )
     .expect("enable both");
-    promote_imported_skill(
-        &roots,
-        PromoteSkillRequest {
-            skill_name: "enabled-helper",
-        },
-    )
-    .expect("promote succeeds");
+    fs::remove_file(roots.claude_code_root.join("enabled-helper")).expect("remove import link");
+    fs::remove_file(roots.codex_root.join("enabled-helper")).expect("remove import link");
+    unix_fs::symlink(&promoted, roots.claude_code_root.join("enabled-helper"))
+        .expect("claude promoted symlink");
+    unix_fs::symlink(&promoted, roots.codex_root.join("enabled-helper"))
+        .expect("codex promoted symlink");
 
     let result = unpromote_imported_skill(
         &roots,
@@ -198,6 +201,7 @@ fn unpromotion_removes_canonical_copy_marks_import_draft_and_relinks_enabled_age
 fn promotion_refuses_canonical_collision_before_mutating() {
     let temp = tempfile::tempdir().expect("tempdir");
     let roots = roots(temp.path());
+    let skills_repo = skills_repo(temp.path());
     let import = import_markdown(&roots, "collision-helper");
     enable_skill(
         &roots,
@@ -207,15 +211,10 @@ fn promotion_refuses_canonical_collision_before_mutating() {
         },
     )
     .expect("enable");
-    write_skill(&roots.canonical_root, "collision-helper");
+    write_skill(&skills_repo.join("third-party"), "collision-helper");
 
-    let error = promote_imported_skill(
-        &roots,
-        PromoteSkillRequest {
-            skill_name: "collision-helper",
-        },
-    )
-    .expect_err("collision fails");
+    let error = promote(&roots, "collision-helper", &skills_repo, &RecordingLauncher)
+        .expect_err("collision fails");
 
     assert!(matches!(
         error.error,
@@ -245,22 +244,23 @@ fn promotion_refuses_unsafe_agent_entries_without_mutating() {
     ] {
         let temp = tempfile::tempdir().expect("tempdir");
         let roots = roots(temp.path());
+        let skills_repo = skills_repo(temp.path());
         import_markdown(&roots, "unsafe-helper");
         place_unsafe_entry(&roots, "unsafe-helper", case);
 
-        let error = promote_imported_skill(
-            &roots,
-            PromoteSkillRequest {
-                skill_name: "unsafe-helper",
-            },
-        )
-        .expect_err("unsafe entry fails");
+        let error = promote(&roots, "unsafe-helper", &skills_repo, &RecordingLauncher)
+            .expect_err("unsafe entry fails");
 
         assert!(matches!(
             error.error,
             SkillOperationError::UnsafeAgentEntry { .. }
         ));
-        assert!(!roots.canonical_root.join("unsafe-helper").exists());
+        assert!(
+            !skills_repo
+                .join("third-party")
+                .join("unsafe-helper")
+                .exists()
+        );
         assert_entry_still_exists(&roots.claude_code_root.join("unsafe-helper"), case);
     }
 }
@@ -269,6 +269,7 @@ fn promotion_refuses_unsafe_agent_entries_without_mutating() {
 fn promotion_reports_unsupported_skill_entries_without_agent_entry_language() {
     let temp = tempfile::tempdir().expect("tempdir");
     let roots = roots(temp.path());
+    let skills_repo = skills_repo(temp.path());
     import_markdown(&roots, "unsupported-entry-helper");
     let import_dir = roots.imports_root.join("unsupported-entry-helper");
     let unsupported_entry = import_dir.join("linked-skill.md");
@@ -277,11 +278,11 @@ fn promotion_reports_unsupported_skill_entries_without_agent_entry_language() {
         .expect("canonical import dir")
         .join("linked-skill.md");
 
-    let error = promote_imported_skill(
+    let error = promote(
         &roots,
-        PromoteSkillRequest {
-            skill_name: "unsupported-entry-helper",
-        },
+        "unsupported-entry-helper",
+        &skills_repo,
+        &RecordingLauncher,
     )
     .expect_err("unsupported source entry fails");
 
@@ -299,27 +300,18 @@ fn promotion_reports_unsupported_skill_entries_without_agent_entry_language() {
 fn promotion_reports_unknown_unsupported_and_already_promoted_sources() {
     let temp = tempfile::tempdir().expect("tempdir");
     let roots = roots(temp.path());
+    let skills_repo = skills_repo(temp.path());
 
-    let unknown = promote_imported_skill(
-        &roots,
-        PromoteSkillRequest {
-            skill_name: "missing-helper",
-        },
-    )
-    .expect_err("unknown");
+    let unknown =
+        promote(&roots, "missing-helper", &skills_repo, &RecordingLauncher).expect_err("unknown");
     assert!(matches!(
         unknown.error,
         SkillOperationError::UnknownSkill { name } if name == "missing-helper"
     ));
 
     write_skill(&roots.canonical_root, "canonical-helper");
-    let canonical = promote_imported_skill(
-        &roots,
-        PromoteSkillRequest {
-            skill_name: "canonical-helper",
-        },
-    )
-    .expect_err("canonical unsupported");
+    let canonical = promote(&roots, "canonical-helper", &skills_repo, &RecordingLauncher)
+        .expect_err("canonical unsupported");
     assert!(matches!(
         canonical.error,
         SkillOperationError::UnsupportedSkillSource { name } if name == "canonical-helper"
@@ -329,33 +321,17 @@ fn promotion_reports_unknown_unsupported_and_already_promoted_sources() {
     fs::create_dir_all(&roots.claude_code_root).expect("claude root");
     unix_fs::symlink(agent_only, roots.claude_code_root.join("agent-helper"))
         .expect("agent symlink");
-    let agent = promote_imported_skill(
-        &roots,
-        PromoteSkillRequest {
-            skill_name: "agent-helper",
-        },
-    )
-    .expect_err("agent unsupported");
+    let agent = promote(&roots, "agent-helper", &skills_repo, &RecordingLauncher)
+        .expect_err("agent unsupported");
     assert!(matches!(
         agent.error,
         SkillOperationError::UnsupportedSkillSource { name } if name == "agent-helper"
     ));
 
     import_markdown(&roots, "promoted-helper");
-    promote_imported_skill(
-        &roots,
-        PromoteSkillRequest {
-            skill_name: "promoted-helper",
-        },
-    )
-    .expect("first promote");
-    let already = promote_imported_skill(
-        &roots,
-        PromoteSkillRequest {
-            skill_name: "promoted-helper",
-        },
-    )
-    .expect_err("already promoted");
+    promote(&roots, "promoted-helper", &skills_repo, &RecordingLauncher).expect("first promote");
+    let already = promote(&roots, "promoted-helper", &skills_repo, &RecordingLauncher)
+        .expect_err("already promoted");
     assert!(matches!(
         already.error,
         SkillOperationError::AlreadyPromoted { name } if name == "promoted-helper"
@@ -366,18 +342,13 @@ fn promotion_reports_unknown_unsupported_and_already_promoted_sources() {
 fn promotion_leaves_repo_documentation_and_installer_files_untouched() {
     let temp = tempfile::tempdir().expect("tempdir");
     let roots = roots(temp.path());
+    let skills_repo = skills_repo(temp.path());
     for file in ["CLAUDE.md", "AGENTS.md", "README.md", "install.sh"] {
         fs::write(temp.path().join(file), format!("{file} sentinel\n")).expect("sentinel");
     }
     import_markdown(&roots, "scoped-helper");
 
-    promote_imported_skill(
-        &roots,
-        PromoteSkillRequest {
-            skill_name: "scoped-helper",
-        },
-    )
-    .expect("promote");
+    promote(&roots, "scoped-helper", &skills_repo, &RecordingLauncher).expect("promote");
 
     for file in ["CLAUDE.md", "AGENTS.md", "README.md", "install.sh"] {
         assert_eq!(
@@ -391,11 +362,15 @@ fn promotion_leaves_repo_documentation_and_installer_files_untouched() {
 fn promote_command_emits_action_json_and_reports_collisions() {
     let temp = tempfile::tempdir().expect("tempdir");
     let roots = roots(temp.path());
+    let skills_repo = skills_repo(temp.path());
     import_markdown(&roots, "command-promote");
 
     let output = skill_importer_command()
         .args(["promote", "--json", "--skill", "command-promote"])
+        .arg("--skills-repo")
+        .arg(&skills_repo)
         .args(root_args(&roots))
+        .env("SKILL_IMPORTER_PROMOTION_PR_DRY_RUN", "1")
         .output()
         .expect("run promote");
     assert!(
@@ -414,10 +389,13 @@ fn promote_command_emits_action_json_and_reports_collisions() {
     );
 
     import_markdown(&roots, "command-collision");
-    write_skill(&roots.canonical_root, "command-collision");
+    write_skill(&skills_repo.join("third-party"), "command-collision");
     let output = skill_importer_command()
         .args(["promote", "--json", "--skill", "command-collision"])
+        .arg("--skills-repo")
+        .arg(&skills_repo)
         .args(root_args(&roots))
+        .env("SKILL_IMPORTER_PROMOTION_PR_DRY_RUN", "1")
         .output()
         .expect("run failing promote");
     assert!(!output.status.success());
@@ -427,6 +405,40 @@ fn promote_command_emits_action_json_and_reports_collisions() {
         "stderr: {stderr}"
     );
     assert!(stderr.contains("already exists"), "stderr: {stderr}");
+}
+
+#[test]
+fn promotion_rolls_back_copy_and_manifest_when_launcher_fails() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = roots(temp.path());
+    let skills_repo = skills_repo(temp.path());
+    import_markdown(&roots, "launch-failure-helper");
+
+    let error = promote(
+        &roots,
+        "launch-failure-helper",
+        &skills_repo,
+        &FailingLauncher,
+    )
+    .expect_err("launcher failure");
+
+    assert!(matches!(
+        error.error,
+        SkillOperationError::PromotionPrLaunch { .. }
+    ));
+    assert!(
+        !skills_repo
+            .join("third-party")
+            .join("launch-failure-helper")
+            .exists()
+    );
+    let manifest = read_manifest(
+        &roots
+            .imports_root
+            .join("launch-failure-helper")
+            .join("import.json"),
+    );
+    assert_eq!(manifest["promoted"], false);
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -447,6 +459,52 @@ fn roots(base: &Path) -> DiscoveryRoots {
     }
 }
 
+fn skills_repo(base: &Path) -> PathBuf {
+    let repo = base.join("agent-skills");
+    fs::create_dir_all(repo.join("third-party")).expect("third-party root");
+    repo
+}
+
+fn promote(
+    roots: &DiscoveryRoots,
+    name: &str,
+    skills_repo: &Path,
+    launcher: &impl PromotionPrLauncher,
+) -> Result<skill_importer::SkillOperationResult, skill_importer::SkillOperationFailure> {
+    promote_imported_skill_with_launcher(
+        roots,
+        PromoteSkillRequest { skill_name: name },
+        PromoteSkillOptions { skills_repo },
+        launcher,
+    )
+}
+
+#[derive(Default)]
+struct RecordingLauncher;
+
+impl PromotionPrLauncher for RecordingLauncher {
+    fn launch(&self, request: PromotePrLaunchRequest) -> Result<PromotePrLaunchResult, String> {
+        Ok(PromotePrLaunchResult {
+            prompt_path: request
+                .skills_repo
+                .join("promotion")
+                .join(format!("{}-prompt.txt", request.skill_name)),
+            script_path: request
+                .skills_repo
+                .join("promotion")
+                .join(format!("{}-run.sh", request.skill_name)),
+        })
+    }
+}
+
+struct FailingLauncher;
+
+impl PromotionPrLauncher for FailingLauncher {
+    fn launch(&self, _request: PromotePrLaunchRequest) -> Result<PromotePrLaunchResult, String> {
+        Err("terminal launch failed".to_string())
+    }
+}
+
 fn import_markdown(roots: &DiscoveryRoots, name: &str) -> skill_importer::ImportResult {
     import_markdown_skill(
         roots,
@@ -456,6 +514,17 @@ fn import_markdown(roots: &DiscoveryRoots, name: &str) -> skill_importer::Import
         },
     )
     .expect("import markdown")
+}
+
+fn mark_promoted(roots: &DiscoveryRoots, name: &str, promoted: bool) {
+    let path = roots.imports_root.join(name).join("import.json");
+    let mut manifest = read_manifest(&path);
+    manifest["promoted"] = Value::Bool(promoted);
+    fs::write(
+        path,
+        serde_json::to_vec_pretty(&manifest).expect("manifest json"),
+    )
+    .expect("write manifest");
 }
 
 fn skill_markdown(name: &str) -> String {

@@ -12,10 +12,13 @@ use ratatui::{
 
 use crate::{
     DeleteImportRequest, DiscoveryRoots, ImportLocalPathRequest, ImportMarkdownRequest,
-    ImportRepositoryRequest, ImportUrlRequest, PromoteSkillRequest, SkillRepositoryCheckout,
-    SkillRepositoryFetchError, SkillRepositoryProvider, SkillUrlFetcher, UnpromoteSkillRequest,
+    ImportRepositoryRequest, ImportUrlRequest, PromoteSkillOptions, PromoteSkillRequest,
+    SkillRepositoryCheckout, SkillRepositoryFetchError, SkillRepositoryProvider, SkillUrlFetcher,
+    UnpromoteSkillRequest,
     analyzer::{AnalyzeSkillRequest, SkillAnalyzerLauncher, TerminalSkillAnalyzerLauncher},
-    discover_skills, workflow,
+    discover_skills,
+    promotion_pr::{PromotionPrLauncher, TerminalPromotionPrLauncher, default_skills_repo},
+    workflow,
 };
 
 use super::{
@@ -29,7 +32,14 @@ pub fn run_tui(
 ) -> Result<(), io::Error> {
     let repository_provider = GitRepositoryProvider;
     let analyzer_launcher = TerminalSkillAnalyzerLauncher;
-    run_tui_with_services(roots, url_fetcher, &repository_provider, &analyzer_launcher)
+    let promotion_launcher = TerminalPromotionPrLauncher;
+    run_tui_with_services(
+        roots,
+        url_fetcher,
+        &repository_provider,
+        &analyzer_launcher,
+        &promotion_launcher,
+    )
 }
 
 fn run_tui_with_services(
@@ -37,6 +47,7 @@ fn run_tui_with_services(
     url_fetcher: &impl SkillUrlFetcher,
     repository_provider: &impl SkillRepositoryProvider,
     analyzer_launcher: &impl SkillAnalyzerLauncher,
+    promotion_launcher: &impl PromotionPrLauncher,
 ) -> Result<(), io::Error> {
     let inventory = discover_skills(roots)?;
     let mut state = AppState::new(inventory);
@@ -50,6 +61,7 @@ fn run_tui_with_services(
         url_fetcher,
         repository_provider,
         analyzer_launcher,
+        promotion_launcher,
         &mut state,
     );
     result.and_then(|()| terminal.show_cursor())
@@ -61,6 +73,7 @@ fn run_event_loop(
     url_fetcher: &impl SkillUrlFetcher,
     repository_provider: &impl SkillRepositoryProvider,
     analyzer_launcher: &impl SkillAnalyzerLauncher,
+    promotion_launcher: &impl PromotionPrLauncher,
     state: &mut AppState,
 ) -> Result<(), io::Error> {
     loop {
@@ -78,6 +91,7 @@ fn run_event_loop(
                             url_fetcher,
                             repository_provider,
                             analyzer_launcher,
+                            promotion_launcher,
                             request,
                         )
                     })?;
@@ -157,6 +171,7 @@ fn execute_operation_request(
     url_fetcher: &impl SkillUrlFetcher,
     repository_provider: &impl SkillRepositoryProvider,
     analyzer_launcher: &impl SkillAnalyzerLauncher,
+    promotion_launcher: &impl PromotionPrLauncher,
     request: AppOperationRequest,
 ) -> Result<TerminalOperationOutcome, String> {
     match request {
@@ -166,6 +181,7 @@ fn execute_operation_request(
                 roots,
                 url_fetcher,
                 repository_provider,
+                promotion_launcher,
                 "enable",
                 workflow::OperationRequest::Enable {
                     skill_name: &skill_name,
@@ -179,6 +195,7 @@ fn execute_operation_request(
                 roots,
                 url_fetcher,
                 repository_provider,
+                promotion_launcher,
                 "disable",
                 workflow::OperationRequest::Disable {
                     skill_name: &skill_name,
@@ -190,15 +207,22 @@ fn execute_operation_request(
             roots,
             url_fetcher,
             repository_provider,
+            promotion_launcher,
             "promote",
-            workflow::OperationRequest::Promote(PromoteSkillRequest {
-                skill_name: &skill_name,
-            }),
+            workflow::OperationRequest::Promote {
+                request: PromoteSkillRequest {
+                    skill_name: &skill_name,
+                },
+                options: PromoteSkillOptions {
+                    skills_repo: &default_skills_repo(),
+                },
+            },
         ),
         AppOperationRequest::UnpromoteSkill { skill_name } => execute_workflow_request(
             roots,
             url_fetcher,
             repository_provider,
+            promotion_launcher,
             "unpromote",
             workflow::OperationRequest::Unpromote(UnpromoteSkillRequest {
                 skill_name: &skill_name,
@@ -208,6 +232,7 @@ fn execute_operation_request(
             roots,
             url_fetcher,
             repository_provider,
+            promotion_launcher,
             "delete",
             workflow::OperationRequest::Delete(DeleteImportRequest {
                 skill_name: &skill_name,
@@ -217,6 +242,7 @@ fn execute_operation_request(
             roots,
             url_fetcher,
             repository_provider,
+            promotion_launcher,
             "import markdown",
             workflow::OperationRequest::ImportMarkdown(ImportMarkdownRequest {
                 markdown: &markdown,
@@ -227,6 +253,7 @@ fn execute_operation_request(
             roots,
             url_fetcher,
             repository_provider,
+            promotion_launcher,
             "import path",
             workflow::OperationRequest::ImportLocalPath(ImportLocalPathRequest {
                 path: path.as_path(),
@@ -236,6 +263,7 @@ fn execute_operation_request(
             roots,
             url_fetcher,
             repository_provider,
+            promotion_launcher,
             "import url",
             workflow::OperationRequest::ImportUrl(ImportUrlRequest { url: &url }),
         ),
@@ -251,6 +279,7 @@ fn execute_operation_request(
                 roots,
                 url_fetcher,
                 repository_provider,
+                promotion_launcher,
                 "repository import",
                 workflow::OperationRequest::ImportRepository(ImportRepositoryRequest {
                     repository: &repository,
@@ -277,11 +306,18 @@ fn execute_workflow_request(
     roots: &DiscoveryRoots,
     url_fetcher: &impl SkillUrlFetcher,
     repository_provider: &impl SkillRepositoryProvider,
+    promotion_launcher: &impl PromotionPrLauncher,
     operation: &'static str,
     request: workflow::OperationRequest<'_>,
 ) -> Result<TerminalOperationOutcome, String> {
-    let outcome = workflow::execute(roots, request, url_fetcher, repository_provider)
-        .map_err(|error| error.to_string())?;
+    let outcome = workflow::execute(
+        roots,
+        request,
+        url_fetcher,
+        repository_provider,
+        promotion_launcher,
+    )
+    .map_err(|error| error.to_string())?;
     terminal_outcome_from_workflow(operation, outcome)
 }
 
@@ -457,6 +493,7 @@ mod tests {
             &UnusedFetcher,
             &provider,
             &UnusedAnalyzer,
+            &UnusedPromotionLauncher,
             AppOperationRequest::RepositoryImport {
                 repository: "https://example.test/repo.git".to_string(),
                 selected_skill_paths: Vec::new(),
@@ -484,6 +521,7 @@ mod tests {
             &UnusedFetcher,
             &provider,
             &UnusedAnalyzer,
+            &UnusedPromotionLauncher,
             AppOperationRequest::RepositoryImport {
                 repository: "https://example.test/repo.git".to_string(),
                 selected_skill_paths: vec!["repo-beta".to_string()],
@@ -528,6 +566,7 @@ mod tests {
             &UnusedFetcher,
             &provider,
             &UnusedAnalyzer,
+            &UnusedPromotionLauncher,
             AppOperationRequest::RepositoryImport {
                 repository: "https://example.test/repo.git".to_string(),
                 selected_skill_paths: vec!["repo-alpha".to_string(), "repo-beta".to_string()],
@@ -588,6 +627,7 @@ mod tests {
                 repository_path: temp.path().join("unused"),
             },
             &analyzer,
+            &UnusedPromotionLauncher,
             AppOperationRequest::AnalyzeSkill {
                 skill_name: "alpha".to_string(),
                 skill_dir: skill_dir.clone(),
@@ -787,6 +827,17 @@ mod tests {
     impl SkillAnalyzerLauncher for UnusedAnalyzer {
         fn launch(&self, _request: AnalyzeSkillRequest) -> Result<AnalyzeLaunchResult, String> {
             panic!("test should not launch analyzer")
+        }
+    }
+
+    struct UnusedPromotionLauncher;
+
+    impl PromotionPrLauncher for UnusedPromotionLauncher {
+        fn launch(
+            &self,
+            _request: crate::promotion_pr::PromotePrLaunchRequest,
+        ) -> Result<crate::promotion_pr::PromotePrLaunchResult, String> {
+            panic!("test should not launch promotion PR workflow")
         }
     }
 
