@@ -49,6 +49,10 @@ fn main_mode_keys_map_to_navigation_target_filter_and_quit() {
         InputOutcome::Action(AppAction::ToggleSourceFilter)
     );
     assert_eq!(
+        action_for_input(&mode, AppInput::Char('A')),
+        InputOutcome::Action(AppAction::RequestAnalyzeSelected)
+    );
+    assert_eq!(
         action_for_input(&mode, AppInput::Char('a')),
         InputOutcome::Action(AppAction::AppendFilter('a'))
     );

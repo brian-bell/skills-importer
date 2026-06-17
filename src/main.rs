@@ -11,8 +11,8 @@ use cli::{Command, RootDefaults};
 use skill_importer::{
     DeleteImportRequest, DiscoveryRoots, ImportLocalPathRequest, ImportMarkdownRequest,
     ImportUrlRequest, PromoteSkillRequest, SkillRepositoryCheckout, SkillRepositoryFetchError,
-    SkillRepositoryProvider, SkillUrlFetchError, SkillUrlFetcher, json_adapter, tui::run_tui,
-    workflow,
+    SkillRepositoryProvider, SkillUrlFetchError, SkillUrlFetcher, analyzer, json_adapter,
+    tui::run_tui, workflow,
 };
 
 const MAX_SKILL_MARKDOWN_BYTES: u64 = 1024 * 1024;
@@ -173,6 +173,9 @@ fn run_with_services_with_defaults(
             )
             .map_err(|error| format!("failed to delete import: {error}"))?;
             write_json_outcome(&mut stdout, &outcome)
+        }
+        Command::RenderAnalysisReport { input, output } => {
+            analyzer::render_analysis_report_file(&input, &output)
         }
         Command::Tui { roots } => tui_runner.run(&roots),
     }

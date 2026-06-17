@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::path::PathBuf;
 
 use crate::{
     AgentEnablement, AgentEntries, AgentEntryStatus, ImportSourceRepository,
@@ -58,6 +59,7 @@ pub struct SkillDetail {
     pub source_repository: Option<ImportSourceRepository>,
     pub enablement: AgentEnablement,
     pub agent_entries: AgentEntries,
+    pub analysis_skill_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -179,6 +181,16 @@ impl AppState {
                 self.prompt_text.pop();
             }
             AppAction::SubmitPrompt => self.submit_prompt(),
+            AppAction::RequestAnalyzeSelected => {
+                if let Some(skill) = self.selected_skill()
+                    && let Some(skill_dir) = skill.analysis_skill_dir.as_ref()
+                {
+                    self.pending_request = Some(AppOperationRequest::AnalyzeSkill {
+                        skill_name: skill.name.clone(),
+                        skill_dir: skill_dir.clone(),
+                    });
+                }
+            }
             AppAction::ConfirmPending => self.confirm_pending(),
             AppAction::ClearPendingRequest => self.pending_request = None,
         }
@@ -209,6 +221,7 @@ impl AppState {
             source_repository: skill.source_repository.clone(),
             enablement: skill.enablement,
             agent_entries: skill.agent_entries.clone(),
+            analysis_skill_dir: skill.analysis_skill_dir.clone(),
         })
     }
 
@@ -245,6 +258,7 @@ impl AppState {
                     "i toggle source: {}",
                     source_filter_label(self.source_filter)
                 ),
+                "A analyze".to_string(),
                 self.promotion_hint(),
                 "r delete".to_string(),
                 "u URL".to_string(),
@@ -277,6 +291,12 @@ impl AppState {
                     operation: result.operation.clone(),
                     skill_name: result.skill_name.clone(),
                     message: format!("success: {action_count} actions"),
+                    success: true,
+                },
+                AppOperationStatus::Launched { report_path } => StatusView {
+                    operation: result.operation.clone(),
+                    skill_name: result.skill_name.clone(),
+                    message: format!("launched: {}", report_path.display()),
                     success: true,
                 },
                 AppOperationStatus::Failure { reason } => StatusView {
@@ -491,7 +511,9 @@ impl AppState {
         match result {
             Ok(result) => {
                 self.latest_result = Some(result);
-                self.needs_refresh = true;
+                self.needs_refresh = request
+                    .as_ref()
+                    .is_none_or(AppOperationRequest::mutates_inventory);
                 self.mode = AppInteractionMode::Main;
             }
             Err(reason) => {
@@ -605,6 +627,9 @@ fn failure_context(
         Some(AppOperationRequest::ImportPath { .. }) => ("import path", None),
         Some(AppOperationRequest::ImportUrl { .. }) => ("import url", None),
         Some(AppOperationRequest::RepositoryImport { .. }) => ("repository import", None),
+        Some(AppOperationRequest::AnalyzeSkill { skill_name, .. }) => {
+            ("analyze", Some(skill_name.clone()))
+        }
         None if matches!(mode, AppInteractionMode::RepositorySelection { .. }) => {
             ("repository import", None)
         }

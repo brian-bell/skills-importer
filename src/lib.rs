@@ -13,6 +13,7 @@ use std::os::unix::ffi::OsStrExt;
 #[cfg(windows)]
 use std::os::windows::ffi::OsStrExt;
 
+pub mod analyzer;
 pub mod json_adapter;
 pub mod tui;
 pub mod workflow;
@@ -42,6 +43,9 @@ pub struct SkillEntry {
     pub promoted: bool,
     pub enablement: AgentEnablement,
     pub agent_entries: AgentEntries,
+    /// Canonical directory that can be copied into an isolated analyzer
+    /// workspace. This path is intentionally omitted from stable JSON output.
+    pub analysis_skill_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -364,9 +368,11 @@ struct SkillDraft {
     description: Option<String>,
     source: SkillSource,
     source_repository: Option<ImportSourceRepository>,
+    imported_repository_metadata_captured: bool,
     promoted: bool,
     claude_code_status: AgentEntryStatus,
     codex_status: AgentEntryStatus,
+    analysis_skill_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -655,6 +661,7 @@ pub fn discover_skills(roots: &DiscoveryRoots) -> io::Result<SkillInventory> {
                 claude_code: skill.claude_code_status,
                 codex: skill.codex_status,
             },
+            analysis_skill_dir: skill.analysis_skill_dir,
         })
         .collect::<Vec<_>>();
 
@@ -2167,9 +2174,12 @@ fn discover_skill_collection(
         return Ok(());
     }
 
-    for entry in fs::read_dir(root)? {
-        let entry = entry?;
-        let path = entry.path();
+    let mut entries = fs::read_dir(root)?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<io::Result<Vec<_>>>()?;
+    entries.sort();
+
+    for path in entries {
         if !collection_entry_is_skill_dir(&path)? {
             continue;
         }
@@ -2180,7 +2190,14 @@ fn discover_skill_collection(
             } else {
                 ImportDiscoveryMetadata::default()
             };
-            merge_skill(skills, metadata, source, import_metadata);
+            let analysis_skill_dir = analysis_dir_for_collection_entry(&path)?;
+            merge_skill(
+                skills,
+                metadata,
+                source,
+                import_metadata,
+                analysis_skill_dir,
+            );
         }
     }
 
@@ -2191,6 +2208,10 @@ fn discover_skill_collection(
 struct ImportDiscoveryMetadata {
     promoted: bool,
     source_repository: Option<ImportSourceRepository>,
+}
+
+fn analysis_dir_for_collection_entry(path: &Path) -> io::Result<Option<PathBuf>> {
+    fs::canonicalize(path).map(Some)
 }
 
 fn read_optional_import_metadata(skill_dir: &Path) -> io::Result<ImportDiscoveryMetadata> {
@@ -2232,18 +2253,27 @@ fn discover_agent_root(
         return Ok(());
     }
 
-    for entry in fs::read_dir(root)? {
-        let entry = entry?;
-        let path = entry.path();
+    let mut entries = fs::read_dir(root)?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<io::Result<Vec<_>>>()?;
+    entries.sort();
+
+    for path in entries {
         let status = agent_entry_status(&path, roots)?;
         if status == AgentEntryStatus::Missing {
             continue;
         }
 
-        let metadata = read_skill_metadata(&path)?.unwrap_or_else(|| SkillMetadata {
-            name: entry.file_name().to_string_lossy().into_owned(),
+        let readable_metadata = read_skill_metadata(&path)?;
+        let metadata = readable_metadata.clone().unwrap_or_else(|| SkillMetadata {
+            name: path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned(),
             description: None,
         });
+        let analysis_skill_dir = agent_analysis_dir(&path, status, readable_metadata.as_ref())?;
 
         let skill = skills
             .entry(metadata.name.clone())
@@ -2252,10 +2282,15 @@ fn discover_agent_root(
                 description: metadata.description,
                 source: SkillSource::AgentOnly,
                 source_repository: None,
+                imported_repository_metadata_captured: false,
                 promoted: false,
                 claude_code_status: AgentEntryStatus::Missing,
                 codex_status: AgentEntryStatus::Missing,
+                analysis_skill_dir: analysis_skill_dir.clone(),
             });
+        if skill.source == SkillSource::AgentOnly && skill.analysis_skill_dir.is_none() {
+            skill.analysis_skill_dir = analysis_skill_dir;
+        }
 
         match agent {
             AgentKind::ClaudeCode => skill.claude_code_status = status,
@@ -2264,6 +2299,21 @@ fn discover_agent_root(
     }
 
     Ok(())
+}
+
+fn agent_analysis_dir(
+    path: &Path,
+    status: AgentEntryStatus,
+    metadata: Option<&SkillMetadata>,
+) -> io::Result<Option<PathBuf>> {
+    if status == AgentEntryStatus::BrokenSymlink
+        || status == AgentEntryStatus::Missing
+        || metadata.is_none()
+    {
+        return Ok(None);
+    }
+
+    fs::canonicalize(path).map(Some)
 }
 
 fn agent_entry_status(path: &Path, roots: &DiscoveryRoots) -> io::Result<AgentEntryStatus> {
@@ -2321,18 +2371,21 @@ fn merge_skill(
     metadata: SkillMetadata,
     source: SkillSource,
     import_metadata: ImportDiscoveryMetadata,
+    analysis_skill_dir: Option<PathBuf>,
 ) {
+    let has_imported_repository_metadata =
+        source == SkillSource::Imported && import_metadata.source_repository.is_some();
     skills
         .entry(metadata.name.clone())
         .and_modify(|skill| {
             skill.promoted |= import_metadata.promoted;
-            if source == SkillSource::Imported && import_metadata.source_repository.is_some() {
+            if has_imported_repository_metadata && !skill.imported_repository_metadata_captured {
                 skill.source_repository = import_metadata.source_repository.clone();
+                skill.imported_repository_metadata_captured = true;
             }
             if source_precedence(source) < source_precedence(skill.source) {
                 skill.source = source;
-            } else if source == skill.source {
-                skill.source_repository = import_metadata.source_repository.clone();
+                skill.analysis_skill_dir = analysis_skill_dir.clone();
             }
             if skill.description.is_none() {
                 skill.description = metadata.description.clone();
@@ -2343,9 +2396,11 @@ fn merge_skill(
             description: metadata.description,
             source,
             source_repository: import_metadata.source_repository,
+            imported_repository_metadata_captured: has_imported_repository_metadata,
             promoted: import_metadata.promoted,
             claude_code_status: AgentEntryStatus::Missing,
             codex_status: AgentEntryStatus::Missing,
+            analysis_skill_dir,
         });
 }
 

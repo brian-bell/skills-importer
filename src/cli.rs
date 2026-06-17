@@ -43,6 +43,10 @@ pub(crate) enum Command {
         roots: DiscoveryRoots,
         skill_name: String,
     },
+    RenderAnalysisReport {
+        input: PathBuf,
+        output: PathBuf,
+    },
     Tui {
         roots: DiscoveryRoots,
     },
@@ -100,6 +104,8 @@ enum CliCommand {
     Disable(SkillAgentsArgs),
     Promote(SkillNameArgs),
     Delete(SkillNameArgs),
+    #[command(hide = true)]
+    RenderAnalysisReport(RenderAnalysisReportArgs),
     Tui(RootArgs),
 }
 
@@ -117,6 +123,7 @@ impl CliCommand {
             Self::Disable(args) => args.into_command(defaults, EnableDisableCommand::Disable),
             Self::Promote(args) => args.into_command(defaults, SkillCommand::Promote),
             Self::Delete(args) => args.into_command(defaults, SkillCommand::Delete),
+            Self::RenderAnalysisReport(args) => args.into_command(),
             Self::Tui(args) => Ok(Command::Tui {
                 roots: args.into_discovery_roots(defaults)?,
             }),
@@ -201,6 +208,25 @@ struct ImportUrlArgs {
     json_roots: JsonRootArgs,
     #[arg(long, value_name = "URL", allow_hyphen_values = true)]
     url: Vec<OsString>,
+}
+
+#[derive(Debug, Args)]
+struct RenderAnalysisReportArgs {
+    #[arg(long, value_name = "PATH", allow_hyphen_values = true)]
+    input: Vec<PathBuf>,
+    #[arg(long, value_name = "PATH", allow_hyphen_values = true)]
+    output: Vec<PathBuf>,
+}
+
+impl RenderAnalysisReportArgs {
+    fn into_command(self) -> Result<Command, String> {
+        Ok(Command::RenderAnalysisReport {
+            input: last_path(&self.input)
+                .ok_or_else(|| "render-analysis-report requires --input".to_string())?,
+            output: last_path(&self.output)
+                .ok_or_else(|| "render-analysis-report requires --output".to_string())?,
+        })
+    }
 }
 
 #[derive(Debug, Args)]
