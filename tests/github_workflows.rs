@@ -4,6 +4,10 @@ fn workflow(name: &str) -> String {
     fs::read_to_string(format!(".github/workflows/{name}.yml")).unwrap()
 }
 
+fn goreleaser_config() -> String {
+    fs::read_to_string(".goreleaser.yml").unwrap()
+}
+
 #[test]
 fn pull_request_workflow_runs_rust_quality_gates() {
     let yaml = workflow("pull-request");
@@ -29,7 +33,38 @@ fn release_workflow_builds_tagged_releases() {
 
     assert!(yaml.contains("tags: ['v*']"));
     assert!(yaml.contains("workflow_dispatch:"));
-    assert!(yaml.contains("cargo metadata --no-deps --format-version 1"));
-    assert!(yaml.contains("cargo build --release"));
-    assert!(yaml.contains("softprops/action-gh-release"));
+    assert!(yaml.contains("runs-on: macos-latest"));
+    assert!(yaml.contains("goreleaser/goreleaser-action"));
+    assert!(yaml.contains("args: release --clean"));
+    assert!(yaml.contains("HOMEBREW_TAP_GITHUB_TOKEN"));
+}
+
+#[test]
+fn release_snapshot_workflow_verifies_packaging_without_publishing() {
+    let yaml = workflow("release-snapshot");
+
+    assert!(yaml.contains("branches: [main]"));
+    assert!(yaml.contains("runs-on: macos-latest"));
+    assert!(yaml.contains("goreleaser/goreleaser-action"));
+    assert!(yaml.contains("args: release --snapshot --clean --skip=publish"));
+}
+
+#[test]
+fn goreleaser_config_builds_rust_archives_for_homebrew_tap() {
+    let yaml = goreleaser_config();
+
+    assert!(yaml.contains("project_name: skill-importer"));
+    assert!(yaml.contains("builder: rust"));
+    assert!(yaml.contains("binary: skill-importer"));
+    assert!(yaml.contains("x86_64-apple-darwin"));
+    assert!(yaml.contains("aarch64-apple-darwin"));
+    assert!(yaml.contains("x86_64-unknown-linux-gnu"));
+    assert!(yaml.contains("aarch64-unknown-linux-gnu"));
+    assert!(
+        yaml.contains("name_template: \"{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}\"")
+    );
+    assert!(yaml.contains("homebrew_casks:"));
+    assert!(yaml.contains("directory: Casks"));
+    assert!(yaml.contains("owner: brian-bell"));
+    assert!(yaml.contains("name: homebrew-tap"));
 }
