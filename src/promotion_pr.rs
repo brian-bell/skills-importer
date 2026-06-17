@@ -169,17 +169,30 @@ pub fn render_promotion_pr_script(skills_repo: &Path, prompt_path: &Path) -> Str
 set -eu
 
 if [ ! -d {skills_repo} ]; then
-  echo "agent-skills checkout was not found: {skills_repo}" >&2
+  printf '%s\n' 'agent-skills checkout was not found' >&2
   exit 1
 fi
+
+cd {skills_repo}
+if [ ! -e .git ] || [ ! -d third-party ] || [ ! -f scripts/install-skills.sh ] || [ ! -f third-party/ATTRIBUTION.md ]; then
+  printf '%s\n' 'agent-skills checkout is missing expected files' >&2
+  exit 1
+fi
+origin=$(git remote get-url origin)
+case "$origin" in
+  https://github.com/brian-bell/agent-skills|https://github.com/brian-bell/agent-skills.git|git@github.com:brian-bell/agent-skills|git@github.com:brian-bell/agent-skills.git|ssh://git@github.com/brian-bell/agent-skills|ssh://git@github.com/brian-bell/agent-skills.git) ;;
+  *)
+    printf '%s\n' 'agent-skills checkout origin is not brian-bell/agent-skills' >&2
+    exit 1
+    ;;
+esac
 
 if ! command -v codex >/dev/null 2>&1; then
   echo "codex CLI was not found on PATH" >&2
   exit 127
 fi
 
-cd {skills_repo}
-codex exec --skip-git-repo-check - < {prompt_path}
+codex exec - < {prompt_path}
 "#,
         skills_repo = shell_quote_path(skills_repo),
         prompt_path = shell_quote_path(prompt_path),
@@ -291,13 +304,42 @@ fn ensure_agent_skills_checkout(path: &Path) -> Result<(), String> {
             path.display()
         ));
     }
-    if !path.join("third-party").is_dir() {
+    if !path.join(".git").exists()
+        || !path.join("third-party").is_dir()
+        || !path.join("scripts").join("install-skills.sh").is_file()
+        || !path.join("third-party").join("ATTRIBUTION.md").is_file()
+    {
         return Err(format!(
-            "agent-skills checkout is missing third-party directory: {}",
+            "agent-skills checkout is missing expected files: {}",
+            path.display()
+        ));
+    }
+    let remote = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(["remote", "get-url", "origin"])
+        .output()
+        .map_err(|error| format!("failed to inspect agent-skills git remote: {error}"))?;
+    if !remote.status.success() || !is_agent_skills_remote(&String::from_utf8_lossy(&remote.stdout))
+    {
+        return Err(format!(
+            "agent-skills checkout origin is not brian-bell/agent-skills: {}",
             path.display()
         ));
     }
     Ok(())
+}
+
+fn is_agent_skills_remote(remote: &str) -> bool {
+    matches!(
+        remote.trim(),
+        "https://github.com/brian-bell/agent-skills"
+            | "https://github.com/brian-bell/agent-skills.git"
+            | "git@github.com:brian-bell/agent-skills"
+            | "git@github.com:brian-bell/agent-skills.git"
+            | "ssh://git@github.com/brian-bell/agent-skills"
+            | "ssh://git@github.com/brian-bell/agent-skills.git"
+    )
 }
 
 fn ensure_codex_available() -> Result<(), String> {
@@ -368,6 +410,9 @@ mod tests {
                 imported_at: 10,
                 content_hash: "sha256:abc".to_string(),
                 promoted: false,
+                promoted_path: None,
+                promoted_repo: None,
+                promotion_id: None,
             },
             analysis_reports: vec![PathBuf::from("/tmp/analysis/report.json")],
         };
@@ -393,7 +438,31 @@ mod tests {
         );
 
         assert!(script.contains("cd '/tmp/agent skills'"));
+        assert!(script.contains("[ ! -e .git ] || [ ! -d third-party ]"));
+        assert!(script.contains("[ ! -f scripts/install-skills.sh ]"));
+        assert!(script.contains("[ ! -f third-party/ATTRIBUTION.md ]"));
         assert!(script.contains("command -v codex"));
-        assert!(script.contains("codex exec --skip-git-repo-check - < '/tmp/prompt'\\''s.txt'"));
+        assert!(script.contains("codex exec - < '/tmp/prompt'\\''s.txt'"));
+    }
+
+    #[test]
+    fn promotion_script_does_not_expand_checkout_path_in_error_message() {
+        let script = render_promotion_pr_script(
+            Path::new("/tmp/$(touch injected)"),
+            Path::new("/tmp/prompt.txt"),
+        );
+
+        assert!(script.contains("printf '%s\\n' 'agent-skills checkout was not found' >&2"));
+        assert!(!script.contains("echo \"agent-skills checkout was not found:"));
+    }
+
+    #[test]
+    fn agent_skills_remote_validation_rejects_repeated_git_suffix() {
+        assert!(is_agent_skills_remote(
+            "https://github.com/brian-bell/agent-skills.git"
+        ));
+        assert!(!is_agent_skills_remote(
+            "https://github.com/brian-bell/agent-skills.git.git"
+        ));
     }
 }

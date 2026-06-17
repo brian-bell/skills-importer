@@ -4,6 +4,7 @@ use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
+use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -20,7 +21,7 @@ pub mod tui;
 pub mod workflow;
 
 use promotion_pr::{
-    NoopPromotionPrLauncher, PromotePrLaunchRequest, PromotionPrLauncher, default_skills_repo,
+    PromotePrLaunchRequest, PromotionPrLauncher, TerminalPromotionPrLauncher, default_skills_repo,
     discover_analysis_reports,
 };
 
@@ -230,6 +231,21 @@ pub struct ImportManifest {
     pub imported_at: u64,
     pub content_hash: String,
     pub promoted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub promoted_path: Option<Box<PathBuf>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub promoted_repo: Option<Box<PathBuf>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub promotion_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+struct PromotionOwnershipRecord {
+    skill_name: String,
+    import_path: PathBuf,
+    promoted_path: PathBuf,
+    content_hash: String,
+    promotion_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -321,6 +337,7 @@ pub enum SkillOperationError {
     AlreadyPromoted { name: String },
     NotPromoted { name: String },
     PromotionPrLaunch { message: String },
+    InvalidSkillsRepo { path: PathBuf, reason: String },
     Io(io::Error),
     Serialize(serde_json::Error),
 }
@@ -551,6 +568,9 @@ pub fn import_local_path_skill(
         imported_at: current_import_time()?,
         content_hash: local_source_content_hash(source_path, source_kind, &markdown)?,
         promoted: false,
+        promoted_path: None,
+        promoted_repo: None,
+        promotion_id: None,
     };
 
     store_import(roots, metadata, manifest, |skill_path| {
@@ -621,6 +641,9 @@ fn import_markdown_content(
         imported_at: current_import_time()?,
         content_hash: content_hash(markdown),
         promoted: false,
+        promoted_path: None,
+        promoted_repo: None,
+        promotion_id: None,
     };
 
     store_import(roots, metadata, manifest, |skill_path| {
@@ -703,7 +726,7 @@ pub fn promote_imported_skill(
     request: PromoteSkillRequest<'_>,
 ) -> Result<SkillOperationResult, SkillOperationFailure> {
     let skills_repo = default_skills_repo();
-    let launcher = NoopPromotionPrLauncher;
+    let launcher = TerminalPromotionPrLauncher;
     promote_imported_skill_with_launcher(
         roots,
         request,
@@ -723,7 +746,6 @@ pub fn promote_imported_skill_with_launcher(
     let mut plan = preflight_promotion(roots, request.skill_name, options.skills_repo)?;
     let mut actions = Vec::new();
 
-    create_directory_if_missing(plan.third_party_root.as_path(), None, &mut actions)?;
     fs::create_dir(&plan.promoted_path)
         .map_err(SkillOperationError::Io)
         .map_err(|error| operation_failure(error, actions.clone()))?;
@@ -739,11 +761,40 @@ pub fn promote_imported_skill_with_launcher(
         &plan.promoted_path,
         CopyMetadataPolicy::ExcludeTopLevelImportManifest,
         &mut actions,
-    )?;
+    )
+    .inspect_err(|_| {
+        let _ = fs::remove_dir_all(&plan.promoted_path);
+    })?;
+
+    plan.manifest.promotion_id = Some(new_promotion_id(&plan.skill_name)?);
+    if let Err(error) = write_promotion_ownership_record(&plan) {
+        rollback_promotion(&plan, &[]);
+        return Err(error);
+    }
+
+    let mut relinked = Vec::new();
+    let relinks = plan.relinks.clone();
+    for relink in &relinks {
+        if let Err(error) = relink_agent_to_promoted(&plan, relink, &mut actions) {
+            rollback_promotion(&plan, &relinked);
+            return Err(error);
+        }
+        relinked.push(relink.clone());
+    }
+
+    plan.manifest.promoted = true;
+    plan.manifest.promoted_path = Some(Box::new(plan.promoted_path.clone()));
+    plan.manifest.promoted_repo = Some(Box::new(plan.skills_repo.clone()));
+    if let Err(error) =
+        write_operation_import_manifest(&plan.manifest_path, &plan.manifest, &mut actions)
+    {
+        rollback_promotion(&plan, &relinked);
+        return Err(error);
+    }
 
     let launch_request = PromotePrLaunchRequest {
         skill_name: plan.skill_name.clone(),
-        skills_repo: options.skills_repo.to_path_buf(),
+        skills_repo: plan.skills_repo.clone(),
         promoted_skill_path: plan.promoted_path.clone(),
         import_manifest: plan.manifest.clone(),
         analysis_reports: discover_analysis_reports(&plan.skill_name),
@@ -757,38 +808,12 @@ pub fn promote_imported_skill_with_launcher(
             source: Some(plan.promoted_path.clone()),
         }),
         Err(message) => {
-            let _ = fs::remove_dir_all(&plan.promoted_path);
+            rollback_promotion(&plan, &relinked);
             return Err(operation_failure(
                 SkillOperationError::PromotionPrLaunch { message },
                 actions,
             ));
         }
-    }
-
-    plan.manifest.promoted = true;
-    write_operation_import_manifest(&plan.manifest_path, &plan.manifest, &mut actions)?;
-
-    for relink in plan.relinks {
-        fs::remove_file(&relink.path)
-            .map_err(SkillOperationError::Io)
-            .map_err(|error| operation_failure(error, actions.clone()))?;
-        actions.push(SkillAction {
-            action: SkillActionKind::RemoveSymlink,
-            agent: Some(relink.agent),
-            path: relink.path.clone(),
-            target: Some(plan.import_path.clone()),
-            source: None,
-        });
-        create_symlink(&plan.promoted_path, &relink.path)
-            .map_err(SkillOperationError::Io)
-            .map_err(|error| operation_failure(error, actions.clone()))?;
-        actions.push(SkillAction {
-            action: SkillActionKind::CreateSymlink,
-            agent: Some(relink.agent),
-            path: relink.path,
-            target: Some(plan.promoted_path.clone()),
-            source: None,
-        });
     }
 
     Ok(SkillOperationResult {
@@ -803,48 +828,243 @@ pub fn unpromote_imported_skill(
 ) -> Result<SkillOperationResult, SkillOperationFailure> {
     let mut plan = preflight_unpromotion(roots, request.skill_name)?;
     let mut actions = Vec::new();
+    let backup_path = promotion_backup_path(&plan)?;
 
-    for relink in plan.relinks {
-        fs::remove_file(&relink.path)
-            .map_err(SkillOperationError::Io)
-            .map_err(|error| operation_failure(error, actions.clone()))?;
+    if let Err(error) = fs::rename(&plan.promoted_path, &backup_path) {
+        return Err(operation_failure(
+            SkillOperationError::Io(error),
+            actions.clone(),
+        ));
+    }
+
+    let mut relinked = Vec::new();
+    let relinks = plan.relinks.clone();
+    for relink in &relinks {
+        if let Err(error) = fs::remove_file(&relink.path) {
+            rollback_unpromotion(&plan, &backup_path, &relinked);
+            return Err(operation_failure(
+                SkillOperationError::Io(error),
+                actions.clone(),
+            ));
+        }
         actions.push(SkillAction {
             action: SkillActionKind::RemoveSymlink,
             agent: Some(relink.agent),
             path: relink.path.clone(),
-            target: Some(plan.canonical_path.clone()),
+            target: Some(plan.promoted_path.clone()),
             source: None,
         });
-        create_symlink(&plan.import_path, &relink.path)
-            .map_err(SkillOperationError::Io)
-            .map_err(|error| operation_failure(error, actions.clone()))?;
+        relinked.push(relink.clone());
+        if let Err(error) = create_symlink(&plan.import_path, &relink.path) {
+            rollback_unpromotion(&plan, &backup_path, &relinked);
+            return Err(operation_failure(
+                SkillOperationError::Io(error),
+                actions.clone(),
+            ));
+        }
         actions.push(SkillAction {
             action: SkillActionKind::CreateSymlink,
             agent: Some(relink.agent),
-            path: relink.path,
+            path: relink.path.clone(),
             target: Some(plan.import_path.clone()),
             source: None,
         });
     }
 
-    fs::remove_dir_all(&plan.canonical_path)
-        .map_err(SkillOperationError::Io)
-        .map_err(|error| operation_failure(error, actions.clone()))?;
+    let previous_manifest = plan.manifest.clone();
+    plan.manifest.promoted = false;
+    plan.manifest.promoted_path = None;
+    plan.manifest.promoted_repo = None;
+    plan.manifest.promotion_id = None;
+    if let Err(error) =
+        write_operation_import_manifest(&plan.manifest_path, &plan.manifest, &mut actions)
+    {
+        rollback_unpromotion_with_manifest(&plan, &backup_path, &relinked, &previous_manifest);
+        return Err(error);
+    }
+
+    let backup_removed = fs::remove_dir_all(&backup_path).is_ok();
     actions.push(SkillAction {
         action: SkillActionKind::RemoveDirectory,
         agent: None,
-        path: plan.canonical_path.clone(),
+        path: plan.promoted_path.clone(),
         target: None,
         source: Some(plan.import_path.clone()),
     });
 
-    plan.manifest.promoted = false;
-    write_operation_import_manifest(&plan.manifest_path, &plan.manifest, &mut actions)?;
+    if let Some(ownership_record_path) = &plan.ownership_record_path {
+        let _ = fs::remove_file(ownership_record_path);
+    }
+
+    if let Some(ownership_record_path) = &plan.ownership_record_path {
+        if let Some(parent) = ownership_record_path.parent() {
+            let _ = fs::remove_dir(parent);
+        }
+        if let Some(parent) = ownership_record_path.parent().and_then(Path::parent) {
+            let _ = fs::remove_dir(parent);
+        }
+    }
+
+    if backup_removed && let Some(parent) = backup_path.parent() {
+        let _ = fs::remove_dir(parent);
+    }
 
     Ok(SkillOperationResult {
         skill_name: plan.skill_name,
         actions,
     })
+}
+
+fn new_promotion_id(skill_name: &str) -> Result<String, SkillOperationFailure> {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(io::Error::other)
+        .map_err(SkillOperationError::Io)
+        .map_err(empty_operation_failure)?;
+    Ok(format!(
+        "{}-{}-{}",
+        skill_name,
+        std::process::id(),
+        timestamp.as_nanos()
+    ))
+}
+
+fn write_promotion_ownership_record(plan: &PromotionPlan) -> Result<(), SkillOperationFailure> {
+    let promotion_id =
+        plan.manifest
+            .promotion_id
+            .as_ref()
+            .ok_or_else(|| SkillOperationFailure {
+                error: SkillOperationError::InvalidSkillsRepo {
+                    path: plan.promoted_path.clone(),
+                    reason: "promotion ownership id is missing".to_string(),
+                },
+                actions: Vec::new(),
+            })?;
+    let record = PromotionOwnershipRecord {
+        skill_name: plan.skill_name.clone(),
+        import_path: plan.import_path.clone(),
+        promoted_path: plan.promoted_path.clone(),
+        content_hash: plan.manifest.content_hash.clone(),
+        promotion_id: promotion_id.clone(),
+    };
+    if let Some(parent) = plan.ownership_record_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(SkillOperationError::Io)
+            .map_err(empty_operation_failure)?;
+    }
+    let contents = serde_json::to_vec_pretty(&record)
+        .map_err(SkillOperationError::Serialize)
+        .map_err(empty_operation_failure)?;
+    fs::write(&plan.ownership_record_path, contents)
+        .map_err(SkillOperationError::Io)
+        .map_err(empty_operation_failure)?;
+    Ok(())
+}
+
+fn promotion_ownership_record_path(
+    import_path: &Path,
+    skill_name: &str,
+) -> Result<PathBuf, SkillOperationFailure> {
+    let imports_root = import_path.parent().ok_or_else(|| {
+        empty_operation_failure(SkillOperationError::InvalidSkillsRepo {
+            path: import_path.to_path_buf(),
+            reason: "import path has no parent".to_string(),
+        })
+    })?;
+    Ok(imports_root
+        .join(".skill-importer")
+        .join("promotions")
+        .join(format!("{skill_name}.json")))
+}
+
+fn promotion_backup_path(plan: &UnpromotionPlan) -> Result<PathBuf, SkillOperationFailure> {
+    let backup_root = plan
+        .promoted_path
+        .parent()
+        .ok_or_else(|| {
+            empty_operation_failure(SkillOperationError::InvalidSkillsRepo {
+                path: plan.promoted_path.clone(),
+                reason: "promoted path has no parent".to_string(),
+            })
+        })?
+        .join(".skill-importer-unpromotion-backups");
+    fs::create_dir_all(&backup_root)
+        .map_err(SkillOperationError::Io)
+        .map_err(empty_operation_failure)?;
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(io::Error::other)
+        .map_err(SkillOperationError::Io)
+        .map_err(empty_operation_failure)?;
+    Ok(backup_root.join(format!("{}-{}", plan.skill_name, timestamp.as_nanos())))
+}
+
+fn rollback_unpromotion_with_manifest(
+    plan: &UnpromotionPlan,
+    backup_path: &Path,
+    relinked: &[AgentRelinkPlan],
+    previous_manifest: &ImportManifest,
+) {
+    let _ = write_import_manifest(&plan.manifest_path, previous_manifest);
+    rollback_unpromotion(plan, backup_path, relinked);
+}
+
+fn rollback_unpromotion(plan: &UnpromotionPlan, backup_path: &Path, relinked: &[AgentRelinkPlan]) {
+    if !plan.promoted_path.exists() && backup_path.exists() {
+        let _ = fs::rename(backup_path, &plan.promoted_path);
+    }
+    for relink in relinked {
+        let _ = fs::remove_file(&relink.path);
+        let _ = create_symlink(&plan.promoted_path, &relink.path);
+    }
+}
+
+fn rollback_promotion(plan: &PromotionPlan, relinked: &[AgentRelinkPlan]) {
+    let mut rollback_manifest = plan.manifest.clone();
+    rollback_manifest.promoted = false;
+    rollback_manifest.promoted_path = None;
+    rollback_manifest.promoted_repo = None;
+    rollback_manifest.promotion_id = None;
+    let _ = write_import_manifest(&plan.manifest_path, &rollback_manifest);
+    let _ = fs::remove_file(&plan.ownership_record_path);
+    for relink in relinked {
+        let _ = fs::remove_file(&relink.path);
+        let _ = create_symlink(&plan.import_path, &relink.path);
+    }
+    let _ = fs::remove_dir_all(&plan.promoted_path);
+}
+
+fn relink_agent_to_promoted(
+    plan: &PromotionPlan,
+    relink: &AgentRelinkPlan,
+    actions: &mut Vec<SkillAction>,
+) -> Result<(), SkillOperationFailure> {
+    fs::remove_file(&relink.path)
+        .map_err(SkillOperationError::Io)
+        .map_err(|error| operation_failure(error, actions.clone()))?;
+    actions.push(SkillAction {
+        action: SkillActionKind::RemoveSymlink,
+        agent: Some(relink.agent),
+        path: relink.path.clone(),
+        target: Some(plan.import_path.clone()),
+        source: None,
+    });
+    if let Err(error) = create_symlink(&plan.promoted_path, &relink.path) {
+        let _ = create_symlink(&plan.import_path, &relink.path);
+        return Err(operation_failure(
+            SkillOperationError::Io(error),
+            actions.clone(),
+        ));
+    }
+    actions.push(SkillAction {
+        action: SkillActionKind::CreateSymlink,
+        agent: Some(relink.agent),
+        path: relink.path.clone(),
+        target: Some(plan.promoted_path.clone()),
+        source: None,
+    });
+    Ok(())
 }
 
 pub fn delete_unpromoted_import(
@@ -1300,8 +1520,10 @@ enum AgentMutationState {
 struct PromotionPlan {
     skill_name: String,
     import_path: PathBuf,
+    skills_repo: PathBuf,
     third_party_root: PathBuf,
     promoted_path: PathBuf,
+    ownership_record_path: PathBuf,
     manifest_path: PathBuf,
     manifest: ImportManifest,
     relinks: Vec<AgentRelinkPlan>,
@@ -1311,7 +1533,8 @@ struct PromotionPlan {
 struct UnpromotionPlan {
     skill_name: String,
     import_path: PathBuf,
-    canonical_path: PathBuf,
+    promoted_path: PathBuf,
+    ownership_record_path: Option<PathBuf>,
     manifest_path: PathBuf,
     manifest: ImportManifest,
     relinks: Vec<AgentRelinkPlan>,
@@ -1350,8 +1573,14 @@ fn preflight_promotion(
     skills_repo: &Path,
 ) -> Result<PromotionPlan, SkillOperationFailure> {
     let preflight = resolve_draft_import_preflight(roots, skill_name)?;
+    ensure_skills_repo_checkout(skills_repo)?;
+    let skills_repo = fs::canonicalize(skills_repo)
+        .map_err(SkillOperationError::Io)
+        .map_err(empty_operation_failure)?;
     let third_party_root = skills_repo.join("third-party");
     let promoted_path = third_party_root.join(skill_name);
+    let ownership_record_path =
+        promotion_ownership_record_path(&preflight.import_path, skill_name)?;
     ensure_destination_available(skill_name, &promoted_path)?;
 
     let mut relinks = Vec::new();
@@ -1369,8 +1598,10 @@ fn preflight_promotion(
     Ok(PromotionPlan {
         skill_name: skill_name.to_string(),
         import_path: preflight.import_path,
+        skills_repo,
         third_party_root,
         promoted_path,
+        ownership_record_path,
         manifest_path: preflight.manifest_path,
         manifest: preflight.manifest,
         relinks,
@@ -1382,27 +1613,33 @@ fn preflight_unpromotion(
     skill_name: &str,
 ) -> Result<UnpromotionPlan, SkillOperationFailure> {
     let preflight = resolve_promoted_import_preflight(roots, skill_name)?;
-    match fs::symlink_metadata(&preflight.canonical_path) {
-        Ok(metadata) if metadata.is_dir() => {}
-        Ok(_) => {
-            return Err(empty_operation_failure(
-                SkillOperationError::UnsupportedSkillSource {
-                    name: skill_name.to_string(),
-                },
-            ));
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return Err(empty_operation_failure(SkillOperationError::UnknownSkill {
-                name: skill_name.to_string(),
-            }));
-        }
-        Err(error) => return Err(empty_operation_failure(SkillOperationError::Io(error))),
-    }
+    let ownership_record_path = preflight
+        .manifest
+        .promoted_repo
+        .as_ref()
+        .map(|_| promotion_ownership_record_path(&preflight.import_path, skill_name))
+        .transpose()?;
+    let promoted_path = match preflight.manifest.promoted_path.as_ref() {
+        Some(path) => validate_manifest_promoted_path(
+            skill_name,
+            path,
+            preflight
+                .manifest
+                .promoted_repo
+                .as_deref()
+                .map(PathBuf::as_path),
+            preflight.manifest.promotion_id.as_deref(),
+            ownership_record_path.as_deref(),
+            &preflight.import_path,
+            &preflight.manifest.content_hash,
+        )?,
+        None => canonical_promoted_path(skill_name, &preflight.canonical_path)?,
+    };
 
     let mut relinks = Vec::new();
     for agent in [SkillAgent::ClaudeCode, SkillAgent::Codex] {
         let path = agent_root(roots, agent).join(skill_name);
-        match exact_managed_symlink_state(&path, &preflight.canonical_path) {
+        match exact_managed_symlink_state(&path, &promoted_path) {
             Ok(AgentMutationState::Missing) => {}
             Ok(AgentMutationState::AlreadyCorrect) => {
                 relinks.push(AgentRelinkPlan { agent, path });
@@ -1414,7 +1651,8 @@ fn preflight_unpromotion(
     Ok(UnpromotionPlan {
         skill_name: skill_name.to_string(),
         import_path: preflight.import_path,
-        canonical_path: preflight.canonical_path,
+        ownership_record_path,
+        promoted_path,
         manifest_path: preflight.manifest_path,
         manifest: preflight.manifest,
         relinks,
@@ -1549,6 +1787,246 @@ fn ensure_destination_available(
     Ok(())
 }
 
+fn ensure_skills_repo_checkout(skills_repo: &Path) -> Result<(), SkillOperationFailure> {
+    let metadata = fs::symlink_metadata(skills_repo).map_err(|error| {
+        if error.kind() == io::ErrorKind::NotFound {
+            empty_operation_failure(SkillOperationError::InvalidSkillsRepo {
+                path: skills_repo.to_path_buf(),
+                reason: "checkout directory does not exist".to_string(),
+            })
+        } else {
+            empty_operation_failure(SkillOperationError::Io(error))
+        }
+    })?;
+    if !metadata.is_dir() {
+        return Err(empty_operation_failure(
+            SkillOperationError::InvalidSkillsRepo {
+                path: skills_repo.to_path_buf(),
+                reason: "checkout path is not a directory".to_string(),
+            },
+        ));
+    }
+    if !skills_repo_has_agent_skills_shape(skills_repo) {
+        return Err(empty_operation_failure(
+            SkillOperationError::InvalidSkillsRepo {
+                path: skills_repo.to_path_buf(),
+                reason: "checkout does not look like agent-skills".to_string(),
+            },
+        ));
+    }
+    ensure_agent_skills_git_identity(skills_repo)?;
+    Ok(())
+}
+
+fn canonical_promoted_path(
+    skill_name: &str,
+    promoted_path: &Path,
+) -> Result<PathBuf, SkillOperationFailure> {
+    match fs::symlink_metadata(promoted_path) {
+        Ok(metadata) if metadata.is_dir() => {}
+        Ok(_) => {
+            return Err(empty_operation_failure(
+                SkillOperationError::UnsupportedSkillSource {
+                    name: skill_name.to_string(),
+                },
+            ));
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Err(empty_operation_failure(SkillOperationError::UnknownSkill {
+                name: skill_name.to_string(),
+            }));
+        }
+        Err(error) => return Err(empty_operation_failure(SkillOperationError::Io(error))),
+    }
+
+    fs::canonicalize(promoted_path)
+        .map_err(SkillOperationError::Io)
+        .map_err(empty_operation_failure)
+}
+
+fn validate_manifest_promoted_path(
+    skill_name: &str,
+    promoted_path: &Path,
+    promoted_repo: Option<&Path>,
+    promotion_id: Option<&str>,
+    ownership_record_path: Option<&Path>,
+    import_path: &Path,
+    content_hash: &str,
+) -> Result<PathBuf, SkillOperationFailure> {
+    let promoted_repo = promoted_repo
+        .ok_or_else(|| invalid_promoted_path(promoted_path, "promoted repo is missing"))?;
+    let promotion_id = promotion_id
+        .ok_or_else(|| invalid_promoted_path(promoted_path, "promotion ownership id is missing"))?;
+    let ownership_record_path = ownership_record_path.ok_or_else(|| {
+        invalid_promoted_path(promoted_path, "promotion ownership record path is missing")
+    })?;
+    let promoted_path = canonical_promoted_path(skill_name, promoted_path)?;
+    let skills_repo = fs::canonicalize(promoted_repo)
+        .map_err(SkillOperationError::Io)
+        .map_err(empty_operation_failure)?;
+    if !skills_repo_has_agent_skills_shape(&skills_repo) {
+        return Err(invalid_promoted_path(
+            promoted_path.as_path(),
+            "promoted repo does not look like agent-skills",
+        ));
+    }
+    ensure_agent_skills_git_identity(&skills_repo)?;
+    let third_party_root = promoted_path
+        .parent()
+        .ok_or_else(|| invalid_promoted_path(promoted_path.as_path(), "missing parent"))?;
+    let path_repo = third_party_root
+        .parent()
+        .ok_or_else(|| invalid_promoted_path(promoted_path.as_path(), "missing repo parent"))?;
+    if third_party_root.file_name() != Some(std::ffi::OsStr::new("third-party"))
+        || promoted_path.file_name() != Some(std::ffi::OsStr::new(skill_name))
+        || path_repo != skills_repo
+    {
+        return Err(invalid_promoted_path(
+            promoted_path.as_path(),
+            "promoted path is outside promoted repo third-party directory",
+        ));
+    }
+
+    let expected_path = skills_repo.join("third-party").join(skill_name);
+    if promoted_path != expected_path {
+        return Err(invalid_promoted_path(
+            promoted_path.as_path(),
+            "promoted path does not match promoted repo and skill name",
+        ));
+    }
+
+    validate_promotion_ownership_record(
+        skill_name,
+        ownership_record_path,
+        &promoted_path,
+        promotion_id,
+        import_path,
+        content_hash,
+    )?;
+
+    Ok(promoted_path)
+}
+
+fn validate_promotion_ownership_record(
+    skill_name: &str,
+    record_path: &Path,
+    promoted_path: &Path,
+    promotion_id: &str,
+    import_path: &Path,
+    content_hash: &str,
+) -> Result<(), SkillOperationFailure> {
+    let contents = fs::read(record_path).map_err(|_| {
+        invalid_promoted_path(
+            record_path,
+            "promotion ownership record is missing or unreadable",
+        )
+    })?;
+    let record: PromotionOwnershipRecord = serde_json::from_slice(&contents).map_err(|_| {
+        invalid_promoted_path(record_path, "promotion ownership record is malformed")
+    })?;
+    if record.skill_name != skill_name
+        || record.promoted_path != promoted_path
+        || record.import_path != import_path
+        || record.content_hash != content_hash
+        || record.promotion_id != promotion_id
+    {
+        return Err(invalid_promoted_path(
+            record_path,
+            "promotion ownership record does not match import manifest",
+        ));
+    }
+
+    Ok(())
+}
+
+fn skills_repo_has_agent_skills_shape(skills_repo: &Path) -> bool {
+    skills_repo.join(".git").exists()
+        && skills_repo.join("third-party").is_dir()
+        && skills_repo
+            .join("scripts")
+            .join("install-skills.sh")
+            .is_file()
+        && skills_repo
+            .join("third-party")
+            .join("ATTRIBUTION.md")
+            .is_file()
+}
+
+fn ensure_agent_skills_git_identity(skills_repo: &Path) -> Result<(), SkillOperationFailure> {
+    let canonical_repo = fs::canonicalize(skills_repo)
+        .map_err(SkillOperationError::Io)
+        .map_err(empty_operation_failure)?;
+    let top_level = git_output(skills_repo, ["rev-parse", "--show-toplevel"])?;
+    let top_level = fs::canonicalize(PathBuf::from(top_level.trim()))
+        .map_err(SkillOperationError::Io)
+        .map_err(empty_operation_failure)?;
+    if top_level != canonical_repo {
+        return Err(empty_operation_failure(
+            SkillOperationError::InvalidSkillsRepo {
+                path: skills_repo.to_path_buf(),
+                reason: "checkout path is not the git worktree root".to_string(),
+            },
+        ));
+    }
+    let remote = git_output(skills_repo, ["remote", "get-url", "origin"])?;
+    if !is_agent_skills_remote(&remote) {
+        return Err(empty_operation_failure(
+            SkillOperationError::InvalidSkillsRepo {
+                path: skills_repo.to_path_buf(),
+                reason: "origin remote is not brian-bell/agent-skills".to_string(),
+            },
+        ));
+    }
+    Ok(())
+}
+
+fn is_agent_skills_remote(remote: &str) -> bool {
+    matches!(
+        remote.trim(),
+        "https://github.com/brian-bell/agent-skills"
+            | "https://github.com/brian-bell/agent-skills.git"
+            | "git@github.com:brian-bell/agent-skills"
+            | "git@github.com:brian-bell/agent-skills.git"
+            | "ssh://git@github.com/brian-bell/agent-skills"
+            | "ssh://git@github.com/brian-bell/agent-skills.git"
+    )
+}
+
+fn git_output<const N: usize>(
+    repo: &Path,
+    args: [&str; N],
+) -> Result<String, SkillOperationFailure> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .output()
+        .map_err(SkillOperationError::Io)
+        .map_err(empty_operation_failure)?;
+    if !output.status.success() {
+        let reason = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(empty_operation_failure(
+            SkillOperationError::InvalidSkillsRepo {
+                path: repo.to_path_buf(),
+                reason: if reason.is_empty() {
+                    "git validation failed".to_string()
+                } else {
+                    reason
+                },
+            },
+        ));
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn invalid_promoted_path(path: &Path, reason: &str) -> SkillOperationFailure {
+    empty_operation_failure(SkillOperationError::InvalidSkillsRepo {
+        path: path.to_path_buf(),
+        reason: reason.to_string(),
+    })
+}
+
 fn unsupported_or_unknown_import_error(
     roots: &DiscoveryRoots,
     skill_name: &str,
@@ -1634,28 +2112,6 @@ fn agent_entry_points_to(path: &Path, expected_target: &Path) -> io::Result<bool
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
         Err(error) => Err(error),
     }
-}
-
-fn create_directory_if_missing(
-    path: &Path,
-    agent: Option<SkillAgent>,
-    actions: &mut Vec<SkillAction>,
-) -> Result<(), SkillOperationFailure> {
-    if path.exists() {
-        return Ok(());
-    }
-
-    fs::create_dir_all(path)
-        .map_err(SkillOperationError::Io)
-        .map_err(|error| operation_failure(error, actions.clone()))?;
-    actions.push(SkillAction {
-        action: SkillActionKind::CreateDirectory,
-        agent,
-        path: path.to_path_buf(),
-        target: None,
-        source: None,
-    });
-    Ok(())
 }
 
 fn agent_root(roots: &DiscoveryRoots, agent: SkillAgent) -> PathBuf {
@@ -1864,6 +2320,9 @@ fn import_skill_directory(
         imported_at: current_import_time()?,
         content_hash: directory_content_hash(source_path)?,
         promoted: false,
+        promoted_path: None,
+        promoted_repo: None,
+        promotion_id: None,
     };
 
     store_import(roots, metadata, manifest, |skill_path| {
@@ -1962,6 +2421,9 @@ fn preflight_repository_imports(
             imported_at: current_import_time()?,
             content_hash: directory_content_hash(&source_path)?,
             promoted: false,
+            promoted_path: None,
+            promoted_repo: None,
+            promotion_id: None,
         };
 
         plans.push(RepositoryImportPlan {
@@ -2686,6 +3148,13 @@ impl fmt::Display for SkillOperationError {
                     "failed to launch promotion PR workflow: {message}"
                 )
             }
+            Self::InvalidSkillsRepo { path, reason } => {
+                write!(
+                    formatter,
+                    "invalid agent-skills checkout {}: {reason}",
+                    path.display()
+                )
+            }
             Self::Io(error) => write!(formatter, "{error}"),
             Self::Serialize(error) => write!(formatter, "{error}"),
         }
@@ -2705,7 +3174,8 @@ impl std::error::Error for SkillOperationError {
             | Self::EnabledImport { .. }
             | Self::AlreadyPromoted { .. }
             | Self::NotPromoted { .. }
-            | Self::PromotionPrLaunch { .. } => None,
+            | Self::PromotionPrLaunch { .. }
+            | Self::InvalidSkillsRepo { .. } => None,
         }
     }
 }
