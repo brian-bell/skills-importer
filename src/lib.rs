@@ -883,7 +883,13 @@ pub fn unpromote_imported_skill(
         return Err(error);
     }
 
-    let backup_removed = fs::remove_dir_all(&backup_path).is_ok();
+    if let Err(error) = fs::remove_dir_all(&backup_path) {
+        rollback_unpromotion_with_manifest(&plan, &backup_path, &relinked, &previous_manifest);
+        return Err(operation_failure(
+            SkillOperationError::Io(error),
+            actions.clone(),
+        ));
+    }
     actions.push(SkillAction {
         action: SkillActionKind::RemoveDirectory,
         agent: None,
@@ -905,7 +911,7 @@ pub fn unpromote_imported_skill(
         }
     }
 
-    if backup_removed && let Some(parent) = backup_path.parent() {
+    if let Some(parent) = backup_path.parent() {
         let _ = fs::remove_dir(parent);
     }
 

@@ -5,10 +5,10 @@ use std::process::Command;
 
 use serde_json::Value;
 use skill_importer::{
-    DiscoveryRoots, EnableSkillRequest, ImportLocalPathRequest, ImportMarkdownRequest,
-    PromoteSkillOptions, PromoteSkillRequest, SkillActionKind, SkillAgent, SkillOperationError,
-    UnpromoteSkillRequest, enable_skill, import_local_path_skill, import_markdown_skill,
-    promote_imported_skill_with_launcher,
+    DisableSkillRequest, DiscoveryRoots, EnableSkillRequest, ImportLocalPathRequest,
+    ImportMarkdownRequest, PromoteSkillOptions, PromoteSkillRequest, SkillActionKind, SkillAgent,
+    SkillOperationError, UnpromoteSkillRequest, disable_skill, enable_skill,
+    import_local_path_skill, import_markdown_skill, promote_imported_skill_with_launcher,
     promotion_pr::{PromotePrLaunchRequest, PromotePrLaunchResult, PromotionPrLauncher},
     unpromote_imported_skill,
 };
@@ -221,6 +221,100 @@ fn unpromotion_removes_third_party_copy_marks_import_draft_and_relinks_enabled_a
             .iter()
             .any(|action| action.action == SkillActionKind::WriteManifest)
     );
+}
+
+#[test]
+fn enabling_promoted_import_links_to_promoted_third_party_copy() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = roots(temp.path());
+    let skills_repo = skills_repo(temp.path());
+    import_markdown(&roots, "promoted-enable-helper");
+    promote(
+        &roots,
+        "promoted-enable-helper",
+        &skills_repo,
+        &RecordingLauncher,
+    )
+    .expect("promote succeeds");
+
+    let result = enable_skill(
+        &roots,
+        EnableSkillRequest {
+            skill_name: "promoted-enable-helper",
+            agents: &[SkillAgent::ClaudeCode],
+        },
+    )
+    .expect("enable promoted import");
+
+    let promoted = fs::canonicalize(
+        skills_repo
+            .join("third-party")
+            .join("promoted-enable-helper"),
+    )
+    .expect("promoted target");
+    assert_eq!(
+        fs::canonicalize(roots.claude_code_root.join("promoted-enable-helper"))
+            .expect("claude target"),
+        promoted
+    );
+    assert!(
+        result
+            .actions
+            .iter()
+            .any(|action| action.action == SkillActionKind::CreateSymlink
+                && action.target.as_ref() == Some(&promoted))
+    );
+}
+
+#[test]
+fn disabling_promoted_import_removes_promoted_managed_symlink() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = roots(temp.path());
+    let skills_repo = skills_repo(temp.path());
+    import_markdown(&roots, "promoted-disable-helper");
+    enable_skill(
+        &roots,
+        EnableSkillRequest {
+            skill_name: "promoted-disable-helper",
+            agents: &[SkillAgent::ClaudeCode],
+        },
+    )
+    .expect("enable import");
+    promote(
+        &roots,
+        "promoted-disable-helper",
+        &skills_repo,
+        &RecordingLauncher,
+    )
+    .expect("promote succeeds");
+
+    let result = disable_skill(
+        &roots,
+        DisableSkillRequest {
+            skill_name: "promoted-disable-helper",
+            agents: &[SkillAgent::ClaudeCode],
+        },
+    )
+    .expect("disable promoted import");
+
+    assert!(
+        !roots
+            .claude_code_root
+            .join("promoted-disable-helper")
+            .exists()
+    );
+    assert!(result.actions.iter().any(|action| {
+        action.action == SkillActionKind::RemoveSymlink
+            && action.target
+                == Some(
+                    fs::canonicalize(
+                        skills_repo
+                            .join("third-party")
+                            .join("promoted-disable-helper"),
+                    )
+                    .expect("promoted target"),
+                )
+    }));
 }
 
 #[test]

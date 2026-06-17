@@ -1,10 +1,10 @@
 use crate::{
     AgentMutationState, DiscoveryRoots, SkillAgent, SkillOperationError, SkillOperationFailure,
     SkillSource, canonicalize_existing_ancestor, discover_skills, empty_operation_failure,
-    exact_managed_symlink_state,
+    exact_managed_symlink_state, read_import_manifest,
 };
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct EnablePlan {
@@ -130,10 +130,13 @@ fn resolve_owned_skill_source(
 
     let source_path = match skill.source {
         SkillSource::Canonical => roots.canonical_root.join(skill_name),
-        SkillSource::Imported => canonicalize_existing_ancestor(&roots.imports_root)
-            .map_err(SkillOperationError::Io)
-            .map_err(empty_operation_failure)?
-            .join(skill_name),
+        SkillSource::Imported => {
+            let import_path = canonicalize_existing_ancestor(&roots.imports_root)
+                .map_err(SkillOperationError::Io)
+                .map_err(empty_operation_failure)?
+                .join(skill_name);
+            promoted_import_source_path(&import_path)?
+        }
         SkillSource::AgentOnly => {
             return Err(empty_operation_failure(
                 SkillOperationError::UnsupportedSkillSource {
@@ -151,6 +154,19 @@ fn resolve_owned_skill_source(
         name: skill.name.clone(),
         path: source_path,
     })
+}
+
+fn promoted_import_source_path(import_path: &Path) -> Result<PathBuf, SkillOperationFailure> {
+    let manifest = read_import_manifest(&import_path.join("import.json"))
+        .map_err(SkillOperationError::Io)
+        .map_err(empty_operation_failure)?;
+    if manifest.promoted
+        && let Some(promoted_path) = manifest.promoted_path
+    {
+        return Ok(*promoted_path);
+    }
+
+    Ok(import_path.to_path_buf())
 }
 
 fn unique_agents(agents: &[SkillAgent]) -> Vec<SkillAgent> {
@@ -176,7 +192,6 @@ mod tests {
     use crate::{ImportMarkdownRequest, import_markdown_skill};
     use std::fs;
     use std::os::unix::fs as unix_fs;
-    use std::path::Path;
 
     #[test]
     fn canonical_skill_source_plans_enable_link_to_canonical_path() {
@@ -204,6 +219,24 @@ mod tests {
         let plan = plan_enable(&roots, "helper", &[SkillAgent::ClaudeCode]).expect("plan enable");
 
         assert_eq!(plan.source_path, import.skill_path);
+        assert_eq!(plan.entries[0].path, roots.claude_code_root.join("helper"));
+        assert_eq!(plan.entries[0].work, EnableEntryWork::CreateLink);
+    }
+
+    #[test]
+    fn promoted_import_source_plans_enable_link_to_promoted_path() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let roots = roots(temp.path());
+        import_skill(&roots, "helper");
+        let promoted = write_skill(
+            &temp.path().join("agent-skills").join("third-party"),
+            "helper",
+        );
+        mark_import_promoted(&roots, "helper", &promoted);
+
+        let plan = plan_enable(&roots, "helper", &[SkillAgent::ClaudeCode]).expect("plan enable");
+
+        assert_eq!(plan.source_path, promoted);
         assert_eq!(plan.entries[0].path, roots.claude_code_root.join("helper"));
         assert_eq!(plan.entries[0].work, EnableEntryWork::CreateLink);
     }
@@ -380,6 +413,21 @@ description: Imported skill.
             },
         )
         .expect("import skill")
+    }
+
+    fn mark_import_promoted(roots: &DiscoveryRoots, name: &str, promoted_path: &Path) {
+        let manifest_path = roots.imports_root.join(name).join("import.json");
+        let mut manifest: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&manifest_path).expect("manifest"))
+                .expect("manifest json");
+        manifest["promoted"] = serde_json::Value::Bool(true);
+        manifest["promoted_path"] =
+            serde_json::Value::String(promoted_path.to_string_lossy().into_owned());
+        fs::write(
+            manifest_path,
+            serde_json::to_vec_pretty(&manifest).expect("manifest json"),
+        )
+        .expect("write manifest");
     }
 
     #[derive(Debug, Clone, Copy)]
