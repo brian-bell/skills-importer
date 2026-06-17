@@ -167,6 +167,36 @@ fn promotion_with_overwrite_accepts_existing_third_party_agent_symlink() {
 }
 
 #[test]
+fn promotion_with_overwrite_refuses_differently_named_destination_skill() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = roots(temp.path());
+    import_markdown(&roots, "replace-helper");
+    let destination = roots.canonical_root.join("replace-helper");
+    fs::create_dir_all(&destination).expect("destination dir");
+    fs::write(destination.join("SKILL.md"), skill_markdown("other-helper")).expect("skill file");
+    let expected_path = fs::canonicalize(&destination).expect("canonical destination");
+
+    let error = promote_imported_skill(
+        &roots,
+        PromoteSkillRequest {
+            skill_name: "replace-helper",
+            overwrite: true,
+        },
+    )
+    .expect_err("mismatched destination fails");
+
+    assert!(matches!(
+        error.error,
+        SkillOperationError::Collision { name, ref path }
+            if name == "replace-helper" && *path == expected_path
+    ));
+    assert_eq!(
+        fs::read_to_string(destination.join("SKILL.md")).expect("existing destination survives"),
+        skill_markdown("other-helper")
+    );
+}
+
+#[test]
 fn promotion_refuses_third_party_frontmatter_name_collision() {
     let temp = tempfile::tempdir().expect("tempdir");
     let roots = roots(temp.path());

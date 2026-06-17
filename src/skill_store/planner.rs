@@ -1,6 +1,7 @@
 use crate::{
     AgentMutationState, DiscoveryRoots, SkillAgent, SkillOperationError, SkillOperationFailure,
-    SkillSource, discover_skills, empty_operation_failure, exact_managed_symlink_state,
+    SkillSource, canonicalize_existing_ancestor, discover_skills, empty_operation_failure,
+    exact_managed_symlink_state,
 };
 use std::fs;
 use std::path::PathBuf;
@@ -52,12 +53,18 @@ struct OwnedSkillSource {
     path: PathBuf,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DraftImportPolicy {
+    Allow,
+    Reject,
+}
+
 pub(super) fn plan_enable(
     roots: &DiscoveryRoots,
     skill_name: &str,
     agents: &[SkillAgent],
 ) -> Result<EnablePlan, SkillOperationFailure> {
-    let source = resolve_owned_skill_source(roots, skill_name)?;
+    let source = resolve_owned_skill_source(roots, skill_name, DraftImportPolicy::Reject)?;
     let mut entries = Vec::new();
 
     for agent in unique_agents(agents) {
@@ -89,7 +96,7 @@ pub(super) fn plan_disable(
     skill_name: &str,
     agents: &[SkillAgent],
 ) -> Result<DisablePlan, SkillOperationFailure> {
-    let source = resolve_owned_skill_source(roots, skill_name)?;
+    let source = resolve_owned_skill_source(roots, skill_name, DraftImportPolicy::Allow)?;
     let mut entries = Vec::new();
 
     for agent in unique_agents(agents) {
@@ -113,6 +120,7 @@ pub(super) fn plan_disable(
 fn resolve_owned_skill_source(
     roots: &DiscoveryRoots,
     skill_name: &str,
+    draft_import_policy: DraftImportPolicy,
 ) -> Result<OwnedSkillSource, SkillOperationFailure> {
     let inventory = discover_skills(roots)
         .map_err(SkillOperationError::Io)
@@ -130,6 +138,12 @@ fn resolve_owned_skill_source(
     let source_path = match skill.source {
         SkillSource::Canonical => roots.canonical_root.join(skill_name),
         SkillSource::Imported if skill.promoted => roots.canonical_root.join(skill_name),
+        SkillSource::Imported if draft_import_policy == DraftImportPolicy::Allow => {
+            canonicalize_existing_ancestor(&roots.imports_root)
+                .map_err(SkillOperationError::Io)
+                .map_err(empty_operation_failure)?
+                .join(skill_name)
+        }
         SkillSource::Imported => {
             return Err(empty_operation_failure(SkillOperationError::NotPromoted {
                 name: skill_name.to_string(),

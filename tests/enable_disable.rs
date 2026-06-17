@@ -182,6 +182,32 @@ fn disabling_promoted_import_removes_only_managed_symlink_and_is_idempotent() {
 }
 
 #[test]
+fn disabling_unpromoted_import_removes_legacy_managed_import_symlink() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = roots(temp.path());
+    let import = import_skill(&roots, "legacy-helper");
+    fs::create_dir_all(&roots.claude_code_root).expect("claude root");
+    let link = roots.claude_code_root.join("legacy-helper");
+    unix_fs::symlink(&import.skill_path, &link).expect("legacy import symlink");
+
+    let result = disable_skill(
+        &roots,
+        DisableSkillRequest {
+            skill_name: "legacy-helper",
+            agents: &[SkillAgent::ClaudeCode],
+        },
+    )
+    .expect("disable legacy import link");
+
+    assert_eq!(result.actions.len(), 1);
+    assert_eq!(result.actions[0].action, SkillActionKind::RemoveSymlink);
+    assert_eq!(result.actions[0].agent, Some(SkillAgent::ClaudeCode));
+    assert_eq!(result.actions[0].path, link);
+    assert_eq!(result.actions[0].target, Some(import.skill_path));
+    assert!(!roots.claude_code_root.join("legacy-helper").exists());
+}
+
+#[test]
 fn enable_and_disable_refuse_unsafe_agent_entries_without_mutating_them() {
     let cases = [
         UnsafeEntry::Directory,

@@ -1490,6 +1490,15 @@ fn ensure_canonical_destination_available(
 ) -> Result<bool, SkillOperationFailure> {
     match fs::symlink_metadata(canonical_path) {
         Ok(metadata) if overwrite && metadata.is_dir() => {
+            let metadata = read_skill_metadata(canonical_path)
+                .map_err(SkillOperationError::Io)
+                .map_err(empty_operation_failure)?;
+            if !matches!(metadata, Some(metadata) if metadata.name == skill_name) {
+                return Err(empty_operation_failure(SkillOperationError::Collision {
+                    name: skill_name.to_string(),
+                    path: canonical_path.to_path_buf(),
+                }));
+            }
             return Ok(true);
         }
         Ok(_) => {
