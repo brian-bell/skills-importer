@@ -1,6 +1,6 @@
 use std::env;
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use clap::{ArgAction, Args, Parser, Subcommand};
 use skill_importer::{DiscoveryRoots, SkillAgent};
@@ -54,17 +54,14 @@ pub(crate) enum Command {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RootDefaults {
-    pub(crate) current_dir: PathBuf,
     pub(crate) home: Option<OsString>,
 }
 
 impl RootDefaults {
-    pub(crate) fn current_process() -> Result<Self, String> {
-        Ok(Self {
-            current_dir: env::current_dir()
-                .map_err(|error| format!("failed to read current directory: {error}"))?,
+    pub(crate) fn current_process() -> Self {
+        Self {
             home: env::var_os("HOME"),
-        })
+        }
     }
 }
 
@@ -341,51 +338,48 @@ impl RootArgs {
         let claude_code_root = last_path(&self.claude_code_root);
         let codex_root = last_path(&self.codex_root);
 
-        let default_root = default_runtime_root(&defaults.current_dir);
-        let home = match (&claude_code_root, &codex_root) {
-            (Some(_), Some(_)) => None,
-            _ => Some(home_dir_from(defaults.home.clone())?),
+        let data_dir = match (
+            &canonical_root,
+            &imports_root,
+            &claude_code_root,
+            &codex_root,
+        ) {
+            (Some(_), Some(_), Some(_), Some(_)) => None,
+            _ => Some(default_data_dir(defaults.home.clone())?),
         };
 
         Ok(DiscoveryRoots {
-            canonical_root: canonical_root
-                .unwrap_or_else(|| default_canonical_root(&defaults.current_dir)),
-            imports_root: imports_root
-                .unwrap_or_else(|| default_root.join(".skill-importer").join("imports")),
+            canonical_root: canonical_root.unwrap_or_else(|| {
+                data_dir
+                    .as_ref()
+                    .expect("data dir resolved when canonical root is defaulted")
+                    .join("catalog")
+                    .join("portable")
+            }),
+            imports_root: imports_root.unwrap_or_else(|| {
+                data_dir
+                    .as_ref()
+                    .expect("data dir resolved when imports root is defaulted")
+                    .join("imports")
+            }),
             claude_code_root: claude_code_root.unwrap_or_else(|| {
-                home.as_ref()
-                    .expect("home resolved when Claude Code root is defaulted")
-                    .join(".claude")
-                    .join("skills")
+                data_dir
+                    .as_ref()
+                    .expect("data dir resolved when Claude Code root is defaulted")
+                    .join("claude-code")
             }),
             codex_root: codex_root.unwrap_or_else(|| {
-                home.as_ref()
-                    .expect("home resolved when Codex root is defaulted")
-                    .join(".agents")
-                    .join("skills")
+                data_dir
+                    .as_ref()
+                    .expect("data dir resolved when Codex root is defaulted")
+                    .join("codex")
             }),
         })
     }
 }
 
-pub(crate) fn default_runtime_root(current_dir: &Path) -> PathBuf {
-    find_catalog_repo_root(current_dir).unwrap_or_else(|| current_dir.to_path_buf())
-}
-
-pub(crate) fn default_canonical_root(current_dir: &Path) -> PathBuf {
-    find_catalog_repo_root(current_dir)
-        .map(|repo_root| repo_root.join("catalog").join("portable"))
-        .unwrap_or_else(|| current_dir.to_path_buf())
-}
-
-pub(crate) fn find_catalog_repo_root(current_dir: &Path) -> Option<PathBuf> {
-    current_dir
-        .ancestors()
-        .find(|ancestor| {
-            ancestor.join("AGENTS.md").is_file()
-                && ancestor.join("catalog").join("portable").is_dir()
-        })
-        .map(Path::to_path_buf)
+pub(crate) fn default_data_dir(home: Option<OsString>) -> Result<PathBuf, String> {
+    Ok(home_dir_from(home)?.join(".skills-source"))
 }
 
 pub(crate) fn home_dir_from(home: Option<OsString>) -> Result<PathBuf, String> {
@@ -429,10 +423,10 @@ mod tests {
 
     #[cfg(unix)]
     use std::os::unix::ffi::OsStringExt;
+    use std::path::Path;
 
     fn defaults(root: &Path) -> RootDefaults {
         RootDefaults {
-            current_dir: root.to_path_buf(),
             home: Some(root.join("home").into_os_string()),
         }
     }
@@ -460,11 +454,12 @@ mod tests {
     }
 
     fn default_roots(root: &Path) -> DiscoveryRoots {
+        let data_dir = root.join("home").join(".skills-source");
         DiscoveryRoots {
-            canonical_root: root.to_path_buf(),
-            imports_root: root.join(".skill-importer").join("imports"),
-            claude_code_root: root.join("home").join(".claude").join("skills"),
-            codex_root: root.join("home").join(".agents").join("skills"),
+            canonical_root: data_dir.join("catalog").join("portable"),
+            imports_root: data_dir.join("imports"),
+            claude_code_root: data_dir.join("claude-code"),
+            codex_root: data_dir.join("codex"),
         }
     }
 
@@ -536,10 +531,7 @@ mod tests {
                     OsString::from("--codex-root"),
                     second.join("codex").into_os_string(),
                 ],
-                &RootDefaults {
-                    current_dir: temp.path().to_path_buf(),
-                    home: None,
-                },
+                &RootDefaults { home: None },
             )
             .expect("repeated roots parse"),
             Command::List {
@@ -941,37 +933,13 @@ mod tests {
     }
 
     #[test]
-    fn default_roots_use_skills_catalog_when_launched_from_nested_directory() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let repo_root = temp.path();
-        let catalog_root = repo_root.join("catalog").join("portable");
-        let nested = repo_root.join("docs").join("nested");
-        std::fs::write(repo_root.join("AGENTS.md"), "# Test repo\n").expect("agents");
-        std::fs::create_dir_all(nested.as_path()).expect("nested dir");
-        std::fs::create_dir_all(&catalog_root).expect("catalog root");
-
-        assert_eq!(default_canonical_root(&nested), catalog_root);
-        assert_eq!(default_runtime_root(&nested), repo_root);
-    }
-
-    #[test]
-    fn default_roots_ignore_unrelated_catalog_portable_directories() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let nested = temp.path().join("nested");
-        std::fs::create_dir_all(temp.path().join("catalog").join("portable"))
-            .expect("catalog root");
-        std::fs::create_dir_all(&nested).expect("nested dir");
-
-        assert_eq!(default_canonical_root(&nested), nested);
-        assert_eq!(default_runtime_root(&nested), nested);
-    }
-
-    #[test]
-    fn default_roots_fall_back_to_current_directory_outside_catalog_repo() {
+    fn default_data_dir_uses_home_skills_source() {
         let temp = tempfile::tempdir().expect("tempdir");
 
-        assert_eq!(default_canonical_root(temp.path()), temp.path());
-        assert_eq!(default_runtime_root(temp.path()), temp.path());
+        assert_eq!(
+            default_data_dir(Some(temp.path().join("home").into_os_string())).expect("data dir"),
+            temp.path().join("home").join(".skills-source")
+        );
     }
 
     #[test]
@@ -994,7 +962,7 @@ mod tests {
     }
 
     #[test]
-    fn partial_agent_root_overrides_still_require_home_for_defaulted_agent_roots() {
+    fn partial_root_overrides_still_require_home_for_defaulted_roots() {
         let temp = tempfile::tempdir().expect("tempdir");
 
         assert_eq!(
@@ -1005,12 +973,9 @@ mod tests {
                     OsString::from("--claude-code-root"),
                     temp.path().join("claude").into_os_string(),
                 ],
-                &RootDefaults {
-                    current_dir: temp.path().to_path_buf(),
-                    home: None,
-                },
+                &RootDefaults { home: None },
             )
-            .expect_err("codex root needs home"),
+            .expect_err("codex root needs data dir"),
             "failed to resolve home directory: HOME is not set"
         );
         assert_eq!(
@@ -1023,12 +988,9 @@ mod tests {
                     OsString::from("--imports-root"),
                     temp.path().join("imports").into_os_string(),
                 ],
-                &RootDefaults {
-                    current_dir: temp.path().to_path_buf(),
-                    home: None,
-                },
+                &RootDefaults { home: None },
             )
-            .expect_err("agent roots need home"),
+            .expect_err("defaulted roots need data dir"),
             "failed to resolve home directory: HOME is not set"
         );
     }
@@ -1064,10 +1026,7 @@ mod tests {
                     OsString::from("--codex-root"),
                     codex_root.clone().into_os_string(),
                 ],
-                &RootDefaults {
-                    current_dir: temp.path().to_path_buf(),
-                    home: None,
-                },
+                &RootDefaults { home: None },
             )
             .expect("non-UTF-8 paths parse"),
             Command::ImportPath {

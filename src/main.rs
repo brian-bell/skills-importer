@@ -46,7 +46,7 @@ fn run_with_services(
     url_fetcher: &impl SkillUrlFetcher,
     tui_runner: &impl TuiRunner,
 ) -> Result<(), String> {
-    let defaults = RootDefaults::current_process()?;
+    let defaults = RootDefaults::current_process();
     run_with_services_with_defaults(args, &mut stdout, url_fetcher, tui_runner, &defaults)
 }
 
@@ -425,14 +425,13 @@ description: Imported from a URL through the command.
     }
 
     #[test]
-    fn tui_command_without_root_overrides_uses_user_level_agent_roots() {
+    fn tui_command_without_root_overrides_uses_single_data_dir_roots() {
         let temp = tempfile::tempdir().expect("tempdir");
         let catalog_repo = temp.path().join("skills-repo");
-        let catalog_root = catalog_repo.join("catalog").join("portable");
         let home = temp.path().join("home");
+        let data_dir = home.join(".skills-source");
         std::fs::create_dir_all(&catalog_repo).expect("catalog repo");
         std::fs::write(catalog_repo.join("AGENTS.md"), "# Test catalog\n").expect("agents");
-        std::fs::create_dir_all(&catalog_root).expect("catalog root");
         let runner = RecordingTuiRunner::default();
         let mut stdout = Vec::new();
 
@@ -442,7 +441,6 @@ description: Imported from a URL through the command.
             &StaticFetcher { markdown: "" },
             &runner,
             &RootDefaults {
-                current_dir: catalog_repo.clone(),
                 home: Some(home.clone().into_os_string()),
             },
         )
@@ -451,10 +449,10 @@ description: Imported from a URL through the command.
         assert_eq!(
             runner.roots.borrow().as_ref(),
             Some(&DiscoveryRoots {
-                canonical_root: catalog_root,
-                imports_root: catalog_repo.join(".skill-importer").join("imports"),
-                claude_code_root: home.join(".claude").join("skills"),
-                codex_root: home.join(".agents").join("skills"),
+                canonical_root: data_dir.join("catalog").join("portable"),
+                imports_root: data_dir.join("imports"),
+                claude_code_root: data_dir.join("claude-code"),
+                codex_root: data_dir.join("codex"),
             })
         );
         assert!(stdout.is_empty(), "tui runner should own terminal output");
@@ -486,10 +484,7 @@ description: Imported from a URL through the command.
                 &mut stdout,
                 &StaticFetcher { markdown: "" },
                 &DisabledTuiRunner,
-                &RootDefaults {
-                    current_dir: temp.path().to_path_buf(),
-                    home,
-                },
+                &RootDefaults { home },
             )
             .expect("all root overrides should not require HOME");
 
