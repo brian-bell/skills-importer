@@ -165,6 +165,10 @@ impl AppState {
                     let operation = if operation == ConfirmationOperation::Promote && skill.promoted
                     {
                         ConfirmationOperation::Unpromote
+                    } else if operation == ConfirmationOperation::Promote
+                        && skill.source == SkillSource::Canonical
+                    {
+                        ConfirmationOperation::PromoteOverwrite
                     } else {
                         operation
                     };
@@ -572,6 +576,11 @@ impl AppState {
             self.pending_request = Some(match operation {
                 ConfirmationOperation::Promote => AppOperationRequest::PromoteSkill {
                     skill_name: skill_name.clone(),
+                    overwrite: false,
+                },
+                ConfirmationOperation::PromoteOverwrite => AppOperationRequest::PromoteSkill {
+                    skill_name: skill_name.clone(),
+                    overwrite: true,
                 },
                 ConfirmationOperation::Unpromote => AppOperationRequest::UnpromoteSkill {
                     skill_name: skill_name.clone(),
@@ -614,7 +623,7 @@ fn failure_context(
         Some(AppOperationRequest::DisableSkill { skill_name, .. }) => {
             ("disable", Some(skill_name.clone()))
         }
-        Some(AppOperationRequest::PromoteSkill { skill_name }) => {
+        Some(AppOperationRequest::PromoteSkill { skill_name, .. }) => {
             ("promote", Some(skill_name.clone()))
         }
         Some(AppOperationRequest::UnpromoteSkill { skill_name }) => {
@@ -717,6 +726,7 @@ pub fn agent_label(agent: SkillAgent) -> &'static str {
 pub fn confirmation_label(operation: ConfirmationOperation) -> &'static str {
     match operation {
         ConfirmationOperation::Promote => "promote",
+        ConfirmationOperation::PromoteOverwrite => "overwrite",
         ConfirmationOperation::Unpromote => "unpromote",
         ConfirmationOperation::Delete => "delete",
     }

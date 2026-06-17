@@ -41,6 +41,7 @@ pub enum SelectionDelta {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfirmationOperation {
     Promote,
+    PromoteOverwrite,
     Unpromote,
     Delete,
 }
@@ -65,6 +66,7 @@ pub enum AppOperationRequest {
     },
     PromoteSkill {
         skill_name: String,
+        overwrite: bool,
     },
     UnpromoteSkill {
         skill_name: String,
@@ -111,7 +113,7 @@ impl AppOperationRequest {
         match self {
             AppOperationRequest::EnableSkill { skill_name, .. }
             | AppOperationRequest::DisableSkill { skill_name, .. }
-            | AppOperationRequest::PromoteSkill { skill_name }
+            | AppOperationRequest::PromoteSkill { skill_name, .. }
             | AppOperationRequest::UnpromoteSkill { skill_name }
             | AppOperationRequest::DeleteImport { skill_name } => Some(skill_name.as_str()),
             AppOperationRequest::ImportMarkdown { .. }

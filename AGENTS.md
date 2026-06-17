@@ -42,15 +42,16 @@ cargo clippy --all-targets -- -D warnings
 ```
 
 `make run-list` and `make run-tui` use disposable local roots under
-`.skill-importer/dev` for imports and agent roots. By default, they look for a
-sibling skills catalog at `../skills/catalog/portable`; override
-`SKILLS_REPO`, `CANONICAL_ROOT`, `IMPORTS_ROOT`, `CLAUDE_CODE_ROOT`, or
-`CODEX_ROOT` when working elsewhere.
+`.skill-importer/dev` for the companion agent-skills repo, imports, and agent
+roots. By default, promoted skills go to
+`.skill-importer/dev/agent-skills/third-party`; override `AGENT_SKILLS_REPO`,
+`CANONICAL_ROOT`, `IMPORTS_ROOT`, `CLAUDE_CODE_ROOT`, or `CODEX_ROOT` when
+working elsewhere.
 
 `make run-prod` runs the TUI without disposable root overrides. It uses
-normal CLI defaults for canonical and imported skills, plus user-level agent
-roots at `~/.claude/skills` and `~/.agents/skills`, so enable/disable actions
-can mutate user-level skill symlinks.
+normal CLI defaults for promoted third-party and imported skills, plus
+user-level agent roots at `~/.claude/skills` and `~/.agents/skills`, so
+enable/disable actions can mutate user-level skill symlinks.
 
 ## Behavior
 
@@ -66,6 +67,8 @@ can mutate user-level skill symlinks.
   selection.
 - JSON commands expose Markdown, path, and URL imports; repository import is
   exposed through the core library and TUI.
+- `AGENT_SKILLS_REPO` defaults to `~/dev/agent-skills`; promoted third-party
+  skills live under `<agent-skills-repo>/third-party`.
 - Enable/disable, promote, and delete operations keep filesystem safety checks
   in core operation code. CLI and TUI code should translate requests into the
   workflow module rather than reimplementing dispatch or JSON result mapping.

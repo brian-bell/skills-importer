@@ -186,13 +186,17 @@ fn execute_operation_request(
                 },
             )
         }
-        AppOperationRequest::PromoteSkill { skill_name } => execute_workflow_request(
+        AppOperationRequest::PromoteSkill {
+            skill_name,
+            overwrite,
+        } => execute_workflow_request(
             roots,
             url_fetcher,
             repository_provider,
             "promote",
             workflow::OperationRequest::Promote(PromoteSkillRequest {
                 skill_name: &skill_name,
+                overwrite,
             }),
         ),
         AppOperationRequest::UnpromoteSkill { skill_name } => execute_workflow_request(

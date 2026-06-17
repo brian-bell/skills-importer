@@ -56,6 +56,7 @@ pub(crate) enum Command {
 pub(crate) struct RootDefaults {
     pub(crate) current_dir: PathBuf,
     pub(crate) home: Option<OsString>,
+    pub(crate) agent_skills_repo: Option<OsString>,
 }
 
 impl RootDefaults {
@@ -64,6 +65,7 @@ impl RootDefaults {
             current_dir: env::current_dir()
                 .map_err(|error| format!("failed to read current directory: {error}"))?,
             home: env::var_os("HOME"),
+            agent_skills_repo: env::var_os("AGENT_SKILLS_REPO"),
         })
     }
 }
@@ -342,14 +344,35 @@ impl RootArgs {
         let codex_root = last_path(&self.codex_root);
 
         let default_root = default_runtime_root(&defaults.current_dir);
-        let home = match (&claude_code_root, &codex_root) {
-            (Some(_), Some(_)) => None,
-            _ => Some(home_dir_from(defaults.home.clone())?),
+        let needs_home = claude_code_root.is_none()
+            || codex_root.is_none()
+            || (canonical_root.is_none() && defaults.agent_skills_repo.is_none());
+        let home = if needs_home {
+            Some(home_dir_from(defaults.home.clone())?)
+        } else {
+            None
         };
+        let default_agent_skills_repo =
+            match (canonical_root.as_ref(), defaults.agent_skills_repo.as_ref()) {
+                (Some(_), _) => None,
+                (None, Some(agent_skills_repo)) => Some(absolute_path_from_env(
+                    "AGENT_SKILLS_REPO",
+                    agent_skills_repo.clone(),
+                )?),
+                (None, None) => Some(
+                    home.as_ref()
+                        .expect("home resolved when agent skills repo is defaulted")
+                        .join("dev")
+                        .join("agent-skills"),
+                ),
+            };
 
         Ok(DiscoveryRoots {
-            canonical_root: canonical_root
-                .unwrap_or_else(|| default_canonical_root(&defaults.current_dir)),
+            canonical_root: canonical_root.unwrap_or_else(|| {
+                default_agent_skills_repo
+                    .expect("agent skills repo resolved when canonical root is defaulted")
+                    .join("third-party")
+            }),
             imports_root: imports_root
                 .unwrap_or_else(|| default_root.join(".skill-importer").join("imports")),
             claude_code_root: claude_code_root.unwrap_or_else(|| {
@@ -370,12 +393,6 @@ impl RootArgs {
 
 pub(crate) fn default_runtime_root(current_dir: &Path) -> PathBuf {
     find_catalog_repo_root(current_dir).unwrap_or_else(|| current_dir.to_path_buf())
-}
-
-pub(crate) fn default_canonical_root(current_dir: &Path) -> PathBuf {
-    find_catalog_repo_root(current_dir)
-        .map(|repo_root| repo_root.join("catalog").join("portable"))
-        .unwrap_or_else(|| current_dir.to_path_buf())
 }
 
 pub(crate) fn find_catalog_repo_root(current_dir: &Path) -> Option<PathBuf> {
@@ -399,6 +416,17 @@ pub(crate) fn home_dir_from(home: Option<OsString>) -> Result<PathBuf, String> {
         ));
     }
     Ok(home)
+}
+
+pub(crate) fn absolute_path_from_env(name: &str, value: OsString) -> Result<PathBuf, String> {
+    let path = PathBuf::from(value);
+    if !path.is_absolute() {
+        return Err(format!(
+            "failed to resolve {name}: value must be an absolute path, got `{}`",
+            path.display()
+        ));
+    }
+    Ok(path)
 }
 
 fn parse_agent(value: &str) -> Result<SkillAgent, String> {
@@ -434,6 +462,7 @@ mod tests {
         RootDefaults {
             current_dir: root.to_path_buf(),
             home: Some(root.join("home").into_os_string()),
+            agent_skills_repo: Some(root.join("agent-skills").into_os_string()),
         }
     }
 
@@ -461,11 +490,37 @@ mod tests {
 
     fn default_roots(root: &Path) -> DiscoveryRoots {
         DiscoveryRoots {
-            canonical_root: root.to_path_buf(),
+            canonical_root: root.join("agent-skills").join("third-party"),
             imports_root: root.join(".skill-importer").join("imports"),
             claude_code_root: root.join("home").join(".claude").join("skills"),
             codex_root: root.join("home").join(".agents").join("skills"),
         }
+    }
+
+    #[test]
+    fn agent_skills_repo_env_defaults_promoted_root_to_third_party() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let agent_skills_repo = temp.path().join("companion-agent-skills");
+
+        assert_eq!(
+            parse_command(
+                [OsString::from("list"), OsString::from("--json")],
+                &RootDefaults {
+                    current_dir: temp.path().to_path_buf(),
+                    home: Some(temp.path().join("home").into_os_string()),
+                    agent_skills_repo: Some(agent_skills_repo.clone().into_os_string()),
+                },
+            )
+            .expect("list parses"),
+            Command::List {
+                roots: DiscoveryRoots {
+                    canonical_root: agent_skills_repo.join("third-party"),
+                    imports_root: temp.path().join(".skill-importer").join("imports"),
+                    claude_code_root: temp.path().join("home").join(".claude").join("skills"),
+                    codex_root: temp.path().join("home").join(".agents").join("skills"),
+                },
+            }
+        );
     }
 
     #[test]
@@ -539,6 +594,7 @@ mod tests {
                 &RootDefaults {
                     current_dir: temp.path().to_path_buf(),
                     home: None,
+                    agent_skills_repo: None,
                 },
             )
             .expect("repeated roots parse"),
@@ -941,36 +997,32 @@ mod tests {
     }
 
     #[test]
-    fn default_roots_use_skills_catalog_when_launched_from_nested_directory() {
+    fn runtime_root_uses_skills_catalog_when_launched_from_nested_directory() {
         let temp = tempfile::tempdir().expect("tempdir");
         let repo_root = temp.path();
-        let catalog_root = repo_root.join("catalog").join("portable");
         let nested = repo_root.join("docs").join("nested");
         std::fs::write(repo_root.join("AGENTS.md"), "# Test repo\n").expect("agents");
         std::fs::create_dir_all(nested.as_path()).expect("nested dir");
-        std::fs::create_dir_all(&catalog_root).expect("catalog root");
+        std::fs::create_dir_all(repo_root.join("catalog").join("portable")).expect("catalog root");
 
-        assert_eq!(default_canonical_root(&nested), catalog_root);
         assert_eq!(default_runtime_root(&nested), repo_root);
     }
 
     #[test]
-    fn default_roots_ignore_unrelated_catalog_portable_directories() {
+    fn runtime_root_ignores_unrelated_catalog_portable_directories() {
         let temp = tempfile::tempdir().expect("tempdir");
         let nested = temp.path().join("nested");
         std::fs::create_dir_all(temp.path().join("catalog").join("portable"))
             .expect("catalog root");
         std::fs::create_dir_all(&nested).expect("nested dir");
 
-        assert_eq!(default_canonical_root(&nested), nested);
         assert_eq!(default_runtime_root(&nested), nested);
     }
 
     #[test]
-    fn default_roots_fall_back_to_current_directory_outside_catalog_repo() {
+    fn runtime_root_falls_back_to_current_directory_outside_catalog_repo() {
         let temp = tempfile::tempdir().expect("tempdir");
 
-        assert_eq!(default_canonical_root(temp.path()), temp.path());
         assert_eq!(default_runtime_root(temp.path()), temp.path());
     }
 
@@ -1008,6 +1060,7 @@ mod tests {
                 &RootDefaults {
                     current_dir: temp.path().to_path_buf(),
                     home: None,
+                    agent_skills_repo: None,
                 },
             )
             .expect_err("codex root needs home"),
@@ -1026,6 +1079,7 @@ mod tests {
                 &RootDefaults {
                     current_dir: temp.path().to_path_buf(),
                     home: None,
+                    agent_skills_repo: None,
                 },
             )
             .expect_err("agent roots need home"),
@@ -1067,6 +1121,7 @@ mod tests {
                 &RootDefaults {
                     current_dir: temp.path().to_path_buf(),
                     home: None,
+                    agent_skills_repo: None,
                 },
             )
             .expect("non-UTF-8 paths parse"),

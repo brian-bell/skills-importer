@@ -5,10 +5,10 @@ use std::process::Command;
 
 use serde_json::Value;
 use skill_importer::{
-    DeleteImportRequest, DiscoveryRoots, EnableSkillRequest, ImportMarkdownRequest,
-    PromoteSkillRequest, SkillActionKind, SkillAgent, SkillOperationError, UnpromoteSkillRequest,
-    delete_unpromoted_import, discover_skills, enable_skill, import_markdown_skill,
-    promote_imported_skill, unpromote_imported_skill,
+    DeleteImportRequest, DiscoveryRoots, ImportMarkdownRequest, PromoteSkillRequest,
+    SkillActionKind, SkillAgent, SkillOperationError, UnpromoteSkillRequest,
+    delete_unpromoted_import, discover_skills, import_markdown_skill, promote_imported_skill,
+    unpromote_imported_skill,
 };
 
 #[test]
@@ -50,6 +50,7 @@ fn promoted_import_can_be_unpromoted_then_deleted() {
         &roots,
         PromoteSkillRequest {
             skill_name: "delete-promoted-helper",
+            overwrite: false,
         },
     )
     .expect("promote");
@@ -79,14 +80,12 @@ fn deleting_import_enabled_for_either_agent_is_blocked_without_mutation() {
         let temp = tempfile::tempdir().expect("tempdir");
         let roots = roots(temp.path());
         let import = import_markdown(&roots, "enabled-helper");
-        enable_skill(
-            &roots,
-            EnableSkillRequest {
-                skill_name: "enabled-helper",
-                agents: &[agent],
-            },
+        fs::create_dir_all(agent_root(&roots, agent)).expect("agent root");
+        unix_fs::symlink(
+            &import.skill_path,
+            agent_root(&roots, agent).join("enabled-helper"),
         )
-        .expect("enable");
+        .expect("legacy import symlink");
 
         let error = delete_unpromoted_import(
             &roots,
@@ -160,6 +159,7 @@ fn delete_reports_unknown_canonical_agent_only_and_promoted_imports() {
         &roots,
         PromoteSkillRequest {
             skill_name: "promoted-helper",
+            overwrite: false,
         },
     )
     .expect("promote");
@@ -242,15 +242,13 @@ fn delete_command_emits_action_json_and_reports_enabled_imports() {
     assert_eq!(json["skill_name"], "command-delete");
     assert_eq!(json["actions"][0]["action"], "remove_directory");
 
-    import_markdown(&roots, "command-enabled");
-    enable_skill(
-        &roots,
-        EnableSkillRequest {
-            skill_name: "command-enabled",
-            agents: &[SkillAgent::ClaudeCode],
-        },
+    let import = import_markdown(&roots, "command-enabled");
+    fs::create_dir_all(&roots.claude_code_root).expect("claude root");
+    unix_fs::symlink(
+        &import.skill_path,
+        roots.claude_code_root.join("command-enabled"),
     )
-    .expect("enable");
+    .expect("legacy import symlink");
     let output = skill_importer_command()
         .args(["delete", "--json", "--skill", "command-enabled"])
         .args(root_args(&roots))

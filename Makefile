@@ -1,9 +1,9 @@
 SHELL := /bin/sh
 
 CARGO ?= cargo
-SKILLS_REPO ?= $(abspath $(CURDIR)/../skills)
 DEV_ROOT ?= $(CURDIR)/.skill-importer/dev
-CANONICAL_ROOT ?= $(SKILLS_REPO)/catalog/portable
+AGENT_SKILLS_REPO ?= $(DEV_ROOT)/agent-skills
+CANONICAL_ROOT ?= $(AGENT_SKILLS_REPO)/third-party
 IMPORTS_ROOT ?= $(DEV_ROOT)/imports
 CLAUDE_CODE_ROOT ?= $(DEV_ROOT)/claude
 CODEX_ROOT ?= $(DEV_ROOT)/codex
@@ -29,7 +29,7 @@ help:
 		'  make run-prod   Run the TUI with user-level agent roots' \
 		'  make clean      Remove build output and disposable local roots' \
 		'' \
-		'Override roots with SKILLS_REPO=..., CANONICAL_ROOT=..., IMPORTS_ROOT=..., CLAUDE_CODE_ROOT=..., CODEX_ROOT=...'
+		'Override roots with AGENT_SKILLS_REPO=..., CANONICAL_ROOT=..., IMPORTS_ROOT=..., CLAUDE_CODE_ROOT=..., CODEX_ROOT=...'
 
 build:
 	$(CARGO) build
@@ -49,7 +49,7 @@ clippy:
 check: fmt-check clippy test
 
 dev-roots:
-	@mkdir -p "$(IMPORTS_ROOT)" "$(CLAUDE_CODE_ROOT)" "$(CODEX_ROOT)"
+	@mkdir -p "$(CANONICAL_ROOT)" "$(IMPORTS_ROOT)" "$(CLAUDE_CODE_ROOT)" "$(CODEX_ROOT)"
 
 run: run-tui
 

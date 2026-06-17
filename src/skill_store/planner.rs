@@ -1,7 +1,6 @@
 use crate::{
     AgentMutationState, DiscoveryRoots, SkillAgent, SkillOperationError, SkillOperationFailure,
-    SkillSource, canonicalize_existing_ancestor, discover_skills, empty_operation_failure,
-    exact_managed_symlink_state,
+    SkillSource, discover_skills, empty_operation_failure, exact_managed_symlink_state,
 };
 use std::fs;
 use std::path::PathBuf;
@@ -130,10 +129,12 @@ fn resolve_owned_skill_source(
 
     let source_path = match skill.source {
         SkillSource::Canonical => roots.canonical_root.join(skill_name),
-        SkillSource::Imported => canonicalize_existing_ancestor(&roots.imports_root)
-            .map_err(SkillOperationError::Io)
-            .map_err(empty_operation_failure)?
-            .join(skill_name),
+        SkillSource::Imported if skill.promoted => roots.canonical_root.join(skill_name),
+        SkillSource::Imported => {
+            return Err(empty_operation_failure(SkillOperationError::NotPromoted {
+                name: skill_name.to_string(),
+            }));
+        }
         SkillSource::AgentOnly => {
             return Err(empty_operation_failure(
                 SkillOperationError::UnsupportedSkillSource {
@@ -173,7 +174,9 @@ fn agent_root(roots: &DiscoveryRoots, agent: SkillAgent) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ImportMarkdownRequest, import_markdown_skill};
+    use crate::{
+        ImportMarkdownRequest, PromoteSkillRequest, import_markdown_skill, promote_imported_skill,
+    };
     use std::fs;
     use std::os::unix::fs as unix_fs;
     use std::path::Path;
@@ -196,14 +199,24 @@ mod tests {
     }
 
     #[test]
-    fn imported_skill_source_plans_enable_link_to_canonicalized_import_path() {
+    fn promoted_import_source_plans_enable_link_to_third_party_path() {
         let temp = tempfile::tempdir().expect("tempdir");
         let roots = roots(temp.path());
-        let import = import_skill(&roots, "helper");
+        import_skill(&roots, "helper");
+        promote_imported_skill(
+            &roots,
+            PromoteSkillRequest {
+                skill_name: "helper",
+                overwrite: false,
+            },
+        )
+        .expect("promote");
+        let third_party =
+            fs::canonicalize(roots.canonical_root.join("helper")).expect("third-party skill");
 
         let plan = plan_enable(&roots, "helper", &[SkillAgent::ClaudeCode]).expect("plan enable");
 
-        assert_eq!(plan.source_path, import.skill_path);
+        assert_eq!(plan.source_path, third_party);
         assert_eq!(plan.entries[0].path, roots.claude_code_root.join("helper"));
         assert_eq!(plan.entries[0].work, EnableEntryWork::CreateLink);
     }

@@ -141,6 +141,7 @@ pub struct DisableSkillRequest<'request> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PromoteSkillRequest<'request> {
     pub skill_name: &'request str,
+    pub overwrite: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -689,10 +690,22 @@ pub fn promote_imported_skill(
     roots: &DiscoveryRoots,
     request: PromoteSkillRequest<'_>,
 ) -> Result<SkillOperationResult, SkillOperationFailure> {
-    let mut plan = preflight_promotion(roots, request.skill_name)?;
+    let mut plan = preflight_promotion(roots, request.skill_name, request.overwrite)?;
     let mut actions = Vec::new();
 
     create_directory_if_missing(plan.canonical_root.as_path(), None, &mut actions)?;
+    if plan.overwrite_existing {
+        fs::remove_dir_all(&plan.canonical_path)
+            .map_err(SkillOperationError::Io)
+            .map_err(|error| operation_failure(error, actions.clone()))?;
+        actions.push(SkillAction {
+            action: SkillActionKind::RemoveDirectory,
+            agent: None,
+            path: plan.canonical_path.clone(),
+            target: None,
+            source: Some(plan.import_path.clone()),
+        });
+    }
     fs::create_dir(&plan.canonical_path)
         .map_err(SkillOperationError::Io)
         .map_err(|error| operation_failure(error, actions.clone()))?;
@@ -758,16 +771,6 @@ pub fn unpromote_imported_skill(
             agent: Some(relink.agent),
             path: relink.path.clone(),
             target: Some(plan.canonical_path.clone()),
-            source: None,
-        });
-        create_symlink(&plan.import_path, &relink.path)
-            .map_err(SkillOperationError::Io)
-            .map_err(|error| operation_failure(error, actions.clone()))?;
-        actions.push(SkillAction {
-            action: SkillActionKind::CreateSymlink,
-            agent: Some(relink.agent),
-            path: relink.path,
-            target: Some(plan.import_path.clone()),
             source: None,
         });
     }
@@ -1250,6 +1253,7 @@ struct PromotionPlan {
     manifest_path: PathBuf,
     manifest: ImportManifest,
     relinks: Vec<AgentRelinkPlan>,
+    overwrite_existing: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1292,9 +1296,11 @@ enum CopyMetadataPolicy {
 fn preflight_promotion(
     roots: &DiscoveryRoots,
     skill_name: &str,
+    overwrite: bool,
 ) -> Result<PromotionPlan, SkillOperationFailure> {
     let preflight = resolve_draft_import_preflight(roots, skill_name)?;
-    ensure_canonical_destination_available(skill_name, &preflight.canonical_path)?;
+    let overwrite_existing =
+        ensure_canonical_destination_available(skill_name, &preflight.canonical_path, overwrite)?;
 
     let mut relinks = Vec::new();
     for agent in [SkillAgent::ClaudeCode, SkillAgent::Codex] {
@@ -1316,6 +1322,7 @@ fn preflight_promotion(
         manifest_path: preflight.manifest_path,
         manifest: preflight.manifest,
         relinks,
+        overwrite_existing,
     })
 }
 
@@ -1476,8 +1483,12 @@ fn resolve_any_import_preflight(
 fn ensure_canonical_destination_available(
     skill_name: &str,
     canonical_path: &Path,
-) -> Result<(), SkillOperationFailure> {
+    overwrite: bool,
+) -> Result<bool, SkillOperationFailure> {
     match fs::symlink_metadata(canonical_path) {
+        Ok(metadata) if overwrite && metadata.is_dir() => {
+            return Ok(true);
+        }
         Ok(_) => {
             return Err(empty_operation_failure(SkillOperationError::Collision {
                 name: skill_name.to_string(),
@@ -1488,7 +1499,7 @@ fn ensure_canonical_destination_available(
         Err(error) => return Err(empty_operation_failure(SkillOperationError::Io(error))),
     }
 
-    Ok(())
+    Ok(false)
 }
 
 fn unsupported_or_unknown_import_error(

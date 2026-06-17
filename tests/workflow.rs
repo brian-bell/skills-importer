@@ -5,9 +5,9 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 use skill_importer::{
     DiscoveryRoots, ImportMarkdownRequest, ImportRepositoryRequest, ImportSourceType,
-    ImportUrlRequest, RepositoryImportResult, SkillAgent, SkillRepositoryCheckout,
-    SkillRepositoryFetchError, SkillRepositoryProvider, SkillUrlFetchError, SkillUrlFetcher,
-    json_adapter, workflow,
+    ImportUrlRequest, PromoteSkillRequest, RepositoryImportResult, SkillAgent,
+    SkillRepositoryCheckout, SkillRepositoryFetchError, SkillRepositoryProvider,
+    SkillUrlFetchError, SkillUrlFetcher, json_adapter, workflow,
 };
 
 #[test]
@@ -57,6 +57,16 @@ description: Imported through workflow.
         &UnusedRepositoryProvider,
     )
     .expect("workflow import succeeds");
+    workflow::execute(
+        &roots,
+        workflow::OperationRequest::Promote(PromoteSkillRequest {
+            skill_name: "workflow-import",
+            overwrite: false,
+        }),
+        &UnusedFetcher,
+        &UnusedRepositoryProvider,
+    )
+    .expect("workflow promote succeeds");
 
     let outcome = workflow::execute(
         &roots,
