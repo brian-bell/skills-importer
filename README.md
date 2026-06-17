@@ -12,7 +12,9 @@ Codex skills.
 - Classify agent entries as managed symlinks, external symlinks, real
   directories, broken symlinks, unmanaged files, or missing entries.
 - Import skills from Markdown, local paths, URLs, and repositories.
-- Enable, disable, promote, and delete skills with filesystem safety checks.
+- Enable, disable, promote, unpromote, and delete skills with filesystem safety
+  checks.
+- Launch isolated skill analysis reports from the TUI on macOS.
 - Run a JSON automation interface or an interactive ratatui terminal UI.
 
 Internally, resolved operations flow through a shared workflow module, and the
@@ -80,6 +82,9 @@ import manifest. `skill-importer list --json` includes that metadata on imported
 skill entries and derives a top-level `source_repositories` list grouping
 repository-imported skills by repository.
 
+Repository import is available in the TUI. Direct JSON automation commands
+currently expose Markdown, path, and URL imports.
+
 ## TUI
 
 Run the interactive TUI with:
@@ -94,14 +99,20 @@ Important keys:
 j/k or arrows  move selection
 c             toggle selected skill for Claude Code
 x             toggle selected skill for Codex
-p             confirm promotion for selected skill
+p             confirm promotion or unpromotion
 r             confirm deletion for selected import
 m             import Markdown from prompt text
 f             import local path from prompt text
 u             import URL from prompt text
 g             import repository from prompt text
+i             toggle all/imported source filter
+A             launch isolated skill analysis
 space         toggle repository candidate selection
 enter         confirm prompt, confirmation, or repository candidate
 esc           cancel prompt or repository selection
 q             quit from the main screen
 ```
+
+Skill analysis launches a Codex run against a snapshot of the selected skill
+and writes an HTML report under the user cache directory. It requires macOS and
+the `codex` executable.
