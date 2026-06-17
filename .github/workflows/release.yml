@@ -1,0 +1,139 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to publish, such as v0.1.0
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate release tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+
+    steps:
+      - name: Resolve release tag
+        id: release
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            tag="${{ inputs.tag }}"
+          else
+            tag="${GITHUB_REF_NAME}"
+          fi
+
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Release tags must look like v0.1.0"
+            exit 1
+          fi
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Check out release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.release.outputs.tag }}
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Validate tag matches crate version
+        shell: bash
+        run: |
+          version="$(
+            cargo metadata --no-deps --format-version 1 \
+              | python3 -c 'import json, sys; print(json.load(sys.stdin)["packages"][0]["version"])'
+          )"
+          expected="v${version}"
+
+          if [[ "${{ steps.release.outputs.tag }}" != "$expected" ]]; then
+            echo "::error::Release tag ${{ steps.release.outputs.tag }} does not match Cargo.toml version ${version}"
+            exit 1
+          fi
+
+  build:
+    name: Build ${{ matrix.os }}
+    needs: validate
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate.outputs.tag }}
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Package release asset
+        shell: bash
+        run: |
+          tag="${{ needs.validate.outputs.tag }}"
+          version="${tag#v}"
+          binary="skill-importer"
+          extension="tar.gz"
+
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            binary="skill-importer.exe"
+            extension="zip"
+          fi
+
+          asset="skill-importer-${version}-${RUNNER_OS}-${RUNNER_ARCH}"
+          mkdir -p "package/${asset}" dist
+          cp "target/release/${binary}" "package/${asset}/${binary}"
+          cp README.md "package/${asset}/README.md"
+
+          if [[ "$extension" == "zip" ]]; then
+            (cd package && 7z a "../dist/${asset}.zip" "${asset}")
+          else
+            tar -czf "dist/${asset}.tar.gz" -C package "${asset}"
+          fi
+
+      - name: Upload release asset
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.os }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub release
+    needs: [validate, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: release-*
+          merge-multiple: true
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.validate.outputs.tag }}
+          files: dist/*
+          generate_release_notes: true
