@@ -1,0 +1,46 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+version: 2
+
+project_name: skill-importer
+
+builds:
+  - id: skill-importer
+    builder: rust
+    binary: skill-importer
+    targets:
+      - x86_64-apple-darwin
+      - aarch64-apple-darwin
+      - x86_64-unknown-linux-gnu
+      - aarch64-unknown-linux-gnu
+
+archives:
+  - id: skill-importer
+    ids:
+      - skill-importer
+    formats:
+      - tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
+  algorithm: sha256
+
+homebrew_casks:
+  - name: skill-importer
+    ids:
+      - skill-importer
+    binaries:
+      - skill-importer
+    directory: Casks
+    homepage: "https://github.com/brian-bell/skills-importer"
+    description: "Inspect and manage local AI skill catalogs"
+    caveats: |
+      The macOS archives are not signed or notarized. If macOS reports that
+      skill-importer is damaged or cannot be opened, inspect the installed
+      binary and clear quarantine with:
+
+        xattr -dr com.apple.quarantine "$(realpath "$(brew --prefix)/bin/skill-importer")"
+    repository:
+      owner: brian-bell
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
