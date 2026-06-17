@@ -1,4 +1,4 @@
-use std::{io, path::Path, process::Command};
+use std::{fs, io, path::Path, process::Command};
 
 use crossterm::{
     event::{self, Event, KeyCode},
@@ -72,6 +72,7 @@ fn run_event_loop(
             };
             match action_for_input(state.mode(), input) {
                 InputOutcome::Action(action) => {
+                    let action = prepare_action(roots, state, action);
                     handle_action(terminal, state, action, |request| {
                         execute_operation_request(
                             roots,
@@ -88,6 +89,27 @@ fn run_event_loop(
         }
     }
     Ok(())
+}
+
+fn prepare_action(roots: &DiscoveryRoots, state: &AppState, action: AppAction) -> AppAction {
+    if action == AppAction::BeginConfirmation(super::ConfirmationOperation::Promote)
+        && let Some(skill) = state.selected_detail()
+        && !skill.promoted
+        && draft_import_manifest_exists(&roots.imports_root.join(&skill.name))
+        && promoted_destination_is_directory(&roots.canonical_root.join(&skill.name))
+    {
+        return AppAction::BeginConfirmation(super::ConfirmationOperation::PromoteOverwrite);
+    }
+
+    action
+}
+
+fn promoted_destination_is_directory(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_dir())
+}
+
+fn draft_import_manifest_exists(import_path: &Path) -> bool {
+    fs::metadata(import_path.join("import.json")).is_ok_and(|metadata| metadata.is_file())
 }
 
 fn handle_action<B: Backend>(
@@ -186,13 +208,17 @@ fn execute_operation_request(
                 },
             )
         }
-        AppOperationRequest::PromoteSkill { skill_name } => execute_workflow_request(
+        AppOperationRequest::PromoteSkill {
+            skill_name,
+            overwrite,
+        } => execute_workflow_request(
             roots,
             url_fetcher,
             repository_provider,
             "promote",
             workflow::OperationRequest::Promote(PromoteSkillRequest {
                 skill_name: &skill_name,
+                overwrite,
             }),
         ),
         AppOperationRequest::UnpromoteSkill { skill_name } => execute_workflow_request(
@@ -620,6 +646,133 @@ mod tests {
     }
 
     #[test]
+    fn prepare_action_uses_overwrite_confirmation_for_import_with_existing_destination() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let roots = roots(temp.path());
+        write_skill(&roots.canonical_root, "alpha", "Existing promoted skill.");
+        write_skill(&roots.imports_root, "alpha", "Imported draft.");
+        write_import_manifest(&roots.imports_root.join("alpha"), false);
+        let state = AppState::new(SkillInventory {
+            skills: vec![skill("alpha", "Imported draft.", SkillSource::Imported)],
+            source_repositories: Vec::new(),
+        });
+
+        let action = prepare_action(
+            &roots,
+            &state,
+            AppAction::BeginConfirmation(crate::tui::ConfirmationOperation::Promote),
+        );
+
+        assert_eq!(
+            action,
+            AppAction::BeginConfirmation(crate::tui::ConfirmationOperation::PromoteOverwrite)
+        );
+    }
+
+    #[test]
+    fn prepare_action_uses_overwrite_confirmation_for_canonical_precedence_draft_import() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let roots = roots(temp.path());
+        write_skill(&roots.canonical_root, "alpha", "Existing promoted skill.");
+        let imported = roots.imports_root.join("alpha");
+        write_skill(&roots.imports_root, "alpha", "Imported draft.");
+        write_import_manifest(&imported, false);
+        let inventory = discover_skills(&roots).expect("inventory");
+        assert_eq!(inventory.skills.len(), 1);
+        assert_eq!(inventory.skills[0].source, SkillSource::Canonical);
+        assert!(!inventory.skills[0].promoted);
+        let state = AppState::new(inventory);
+
+        let action = prepare_action(
+            &roots,
+            &state,
+            AppAction::BeginConfirmation(crate::tui::ConfirmationOperation::Promote),
+        );
+
+        assert_eq!(
+            action,
+            AppAction::BeginConfirmation(crate::tui::ConfirmationOperation::PromoteOverwrite)
+        );
+    }
+
+    #[test]
+    fn prepare_action_does_not_infer_overwrite_for_canonical_skill() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let roots = roots(temp.path());
+        write_skill(&roots.canonical_root, "alpha", "Canonical skill.");
+        let state = AppState::new(SkillInventory {
+            skills: vec![skill("alpha", "Canonical skill.", SkillSource::Canonical)],
+            source_repositories: Vec::new(),
+        });
+
+        let action = prepare_action(
+            &roots,
+            &state,
+            AppAction::BeginConfirmation(crate::tui::ConfirmationOperation::Promote),
+        );
+
+        assert_eq!(
+            action,
+            AppAction::BeginConfirmation(crate::tui::ConfirmationOperation::Promote)
+        );
+    }
+
+    #[test]
+    fn prepare_action_does_not_offer_overwrite_for_file_destination() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let roots = roots(temp.path());
+        fs::create_dir_all(&roots.canonical_root).expect("canonical root");
+        fs::write(roots.canonical_root.join("alpha"), "not a skill dir").expect("file collision");
+        write_skill(&roots.imports_root, "alpha", "Imported draft.");
+        write_import_manifest(&roots.imports_root.join("alpha"), false);
+        let state = AppState::new(SkillInventory {
+            skills: vec![skill("alpha", "Imported draft.", SkillSource::Imported)],
+            source_repositories: Vec::new(),
+        });
+
+        let action = prepare_action(
+            &roots,
+            &state,
+            AppAction::BeginConfirmation(crate::tui::ConfirmationOperation::Promote),
+        );
+
+        assert_eq!(
+            action,
+            AppAction::BeginConfirmation(crate::tui::ConfirmationOperation::Promote)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepare_action_does_not_offer_overwrite_for_broken_symlink_destination() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let roots = roots(temp.path());
+        fs::create_dir_all(&roots.canonical_root).expect("canonical root");
+        std::os::unix::fs::symlink(
+            temp.path().join("missing-destination"),
+            roots.canonical_root.join("alpha"),
+        )
+        .expect("broken symlink");
+        write_skill(&roots.imports_root, "alpha", "Imported draft.");
+        write_import_manifest(&roots.imports_root.join("alpha"), false);
+        let state = AppState::new(SkillInventory {
+            skills: vec![skill("alpha", "Imported draft.", SkillSource::Imported)],
+            source_repositories: Vec::new(),
+        });
+
+        let action = prepare_action(
+            &roots,
+            &state,
+            AppAction::BeginConfirmation(crate::tui::ConfirmationOperation::Promote),
+        );
+
+        assert_eq!(
+            action,
+            AppAction::BeginConfirmation(crate::tui::ConfirmationOperation::Promote)
+        );
+    }
+
+    #[test]
     fn pending_frame_is_drawn_before_executing_enable_request_from_toggle() {
         let mut state = AppState::new(SkillInventory {
             skills: vec![skill("alpha", "First", SkillSource::Canonical)],
@@ -854,6 +1007,22 @@ description: {description}
             ),
         )
         .expect("skill file");
+    }
+
+    fn write_import_manifest(skill_path: &Path, promoted: bool) {
+        fs::write(
+            skill_path.join("import.json"),
+            format!(
+                r#"{{
+  "source_type": "markdown",
+  "source_location": null,
+  "imported_at": 1,
+  "content_hash": "sha256:test",
+  "promoted": {promoted}
+}}"#
+            ),
+        )
+        .expect("import manifest");
     }
 
     fn skill(name: &str, description: &str, source: SkillSource) -> SkillEntry {

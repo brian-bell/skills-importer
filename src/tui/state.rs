@@ -57,6 +57,7 @@ pub struct SkillDetail {
     pub description: Option<String>,
     pub source: SkillSource,
     pub source_repository: Option<ImportSourceRepository>,
+    pub promoted: bool,
     pub enablement: AgentEnablement,
     pub agent_entries: AgentEntries,
     pub analysis_skill_dir: Option<PathBuf>,
@@ -219,6 +220,7 @@ impl AppState {
             description: skill.description.clone(),
             source: skill.source,
             source_repository: skill.source_repository.clone(),
+            promoted: skill.promoted,
             enablement: skill.enablement,
             agent_entries: skill.agent_entries.clone(),
             analysis_skill_dir: skill.analysis_skill_dir.clone(),
@@ -572,6 +574,11 @@ impl AppState {
             self.pending_request = Some(match operation {
                 ConfirmationOperation::Promote => AppOperationRequest::PromoteSkill {
                     skill_name: skill_name.clone(),
+                    overwrite: false,
+                },
+                ConfirmationOperation::PromoteOverwrite => AppOperationRequest::PromoteSkill {
+                    skill_name: skill_name.clone(),
+                    overwrite: true,
                 },
                 ConfirmationOperation::Unpromote => AppOperationRequest::UnpromoteSkill {
                     skill_name: skill_name.clone(),
@@ -614,7 +621,7 @@ fn failure_context(
         Some(AppOperationRequest::DisableSkill { skill_name, .. }) => {
             ("disable", Some(skill_name.clone()))
         }
-        Some(AppOperationRequest::PromoteSkill { skill_name }) => {
+        Some(AppOperationRequest::PromoteSkill { skill_name, .. }) => {
             ("promote", Some(skill_name.clone()))
         }
         Some(AppOperationRequest::UnpromoteSkill { skill_name }) => {
@@ -717,6 +724,7 @@ pub fn agent_label(agent: SkillAgent) -> &'static str {
 pub fn confirmation_label(operation: ConfirmationOperation) -> &'static str {
     match operation {
         ConfirmationOperation::Promote => "promote",
+        ConfirmationOperation::PromoteOverwrite => "overwrite",
         ConfirmationOperation::Unpromote => "unpromote",
         ConfirmationOperation::Delete => "delete",
     }

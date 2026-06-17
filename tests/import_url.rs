@@ -180,7 +180,7 @@ fn url_import_reports_fetch_failures_without_partial_storage() {
 }
 
 #[test]
-fn url_import_reuses_canonical_and_import_collision_behavior() {
+fn url_import_allows_third_party_collision_for_replacement_drafts() {
     let temp = tempfile::tempdir().expect("tempdir");
     let roots = DiscoveryRoots {
         canonical_root: temp.path().join("canonical"),
@@ -189,45 +189,71 @@ fn url_import_reuses_canonical_and_import_collision_behavior() {
         codex_root: temp.path().join("codex"),
     };
     write_skill(&roots.canonical_root, "shared-name", "Already canonical.");
-    write_skill(&roots.imports_root, "already-imported", "Already imported.");
-
-    for (name, expected_path) in [
-        ("shared-name", roots.canonical_root.join("shared-name")),
-        (
-            "already-imported",
-            fs::canonicalize(&roots.imports_root)
-                .expect("canonical imports root")
-                .join("already-imported"),
-        ),
-    ] {
-        let markdown = format!(
-            r#"---
-name: {name}
+    let fetcher = OwnedFetcher {
+        markdown: r#"---
+name: shared-name
 description: New URL version.
 ---
 "#
-        );
-        let fetcher = OwnedFetcher { markdown };
+        .to_string(),
+    };
 
-        let error = import_url_skill(
-            &roots,
-            ImportUrlRequest {
-                url: "https://example.test/helper.md",
-            },
-            &fetcher,
-        )
-        .expect_err("import fails");
+    let import = import_url_skill(
+        &roots,
+        ImportUrlRequest {
+            url: "https://example.test/helper.md",
+        },
+        &fetcher,
+    )
+    .expect("canonical collision should not block draft import");
 
-        match error {
-            ImportError::Collision {
-                name: actual_name,
-                path,
-            } => {
-                assert_eq!(actual_name, name);
-                assert_eq!(path, expected_path);
-            }
-            error => panic!("unexpected error: {error}"),
+    assert_eq!(import.skill_name, "shared-name");
+    assert!(
+        roots
+            .imports_root
+            .join("shared-name")
+            .join("import.json")
+            .exists()
+    );
+}
+
+#[test]
+fn url_import_refuses_import_collisions() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = DiscoveryRoots {
+        canonical_root: temp.path().join("canonical"),
+        imports_root: temp.path().join("imports"),
+        claude_code_root: temp.path().join("claude"),
+        codex_root: temp.path().join("codex"),
+    };
+    write_skill(&roots.imports_root, "already-imported", "Already imported.");
+    let expected_path = fs::canonicalize(&roots.imports_root)
+        .expect("canonical imports root")
+        .join("already-imported");
+    let fetcher = OwnedFetcher {
+        markdown: r#"---
+name: already-imported
+description: New URL version.
+---
+"#
+        .to_string(),
+    };
+
+    let error = import_url_skill(
+        &roots,
+        ImportUrlRequest {
+            url: "https://example.test/helper.md",
+        },
+        &fetcher,
+    )
+    .expect_err("import fails");
+
+    match error {
+        ImportError::Collision { name, path } => {
+            assert_eq!(name, "already-imported");
+            assert_eq!(path, expected_path);
         }
+        error => panic!("unexpected error: {error}"),
     }
 }
 

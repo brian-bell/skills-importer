@@ -842,6 +842,7 @@ fn promote_and_delete_require_confirmation_before_pending_request() {
         state.pending_request(),
         Some(&AppOperationRequest::PromoteSkill {
             skill_name: "alpha".to_string(),
+            overwrite: false,
         })
     );
 
@@ -854,6 +855,48 @@ fn promote_and_delete_require_confirmation_before_pending_request() {
             skill_name: "alpha".to_string(),
         })
     );
+}
+
+#[test]
+fn promote_confirmation_for_existing_third_party_destination_queues_overwrite() {
+    let state_skill = skill("alpha", "First", SkillSource::Imported);
+    let mut state = AppState::new(inventory([state_skill]));
+
+    state.reduce(AppAction::BeginConfirmation(
+        ConfirmationOperation::PromoteOverwrite,
+    ));
+    assert!(matches!(
+        state.mode(),
+        AppInteractionMode::Confirm {
+            operation: ConfirmationOperation::PromoteOverwrite,
+            ..
+        }
+    ));
+    state.reduce(AppAction::ConfirmPending);
+
+    assert_eq!(
+        state.pending_request(),
+        Some(&AppOperationRequest::PromoteSkill {
+            skill_name: "alpha".to_string(),
+            overwrite: true,
+        })
+    );
+}
+
+#[test]
+fn canonical_skill_promotion_shortcut_does_not_queue_overwrite() {
+    let state_skill = skill("alpha", "First", SkillSource::Canonical);
+    let mut state = AppState::new(inventory([state_skill]));
+
+    state.reduce(AppAction::BeginConfirmation(ConfirmationOperation::Promote));
+
+    assert!(matches!(
+        state.mode(),
+        AppInteractionMode::Confirm {
+            operation: ConfirmationOperation::Promote,
+            ..
+        }
+    ));
 }
 
 #[test]

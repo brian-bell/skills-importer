@@ -130,6 +130,45 @@ fn repository_with_one_valid_skill_imports_directly() {
 }
 
 #[test]
+fn repository_with_one_valid_skill_allows_third_party_collision_for_replacement_draft() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = roots(temp.path());
+    let repository = temp.path().join("repo");
+    write_skill(&repository, "solo-repo-skill", "Only repository skill.");
+    write_skill(
+        &roots.canonical_root,
+        "solo-repo-skill",
+        "Existing third-party skill.",
+    );
+    let provider = StaticRepositoryProvider {
+        repository_path: repository,
+    };
+
+    let result = import_repository_skill(
+        &roots,
+        ImportRepositoryRequest {
+            repository: "https://example.test/solo.git",
+            selected_skill_paths: &[],
+        },
+        &provider,
+    )
+    .expect("third-party collision should not block draft import");
+
+    let import = match result {
+        RepositoryImportResult::Imported(import) => import,
+        result => panic!("expected single import, got {result:?}"),
+    };
+    assert_eq!(import.skill_name, "solo-repo-skill");
+    assert!(
+        roots
+            .imports_root
+            .join("solo-repo-skill")
+            .join("import.json")
+            .exists()
+    );
+}
+
+#[test]
 fn repository_root_skill_imports_directly_with_supporting_files() {
     let temp = tempfile::tempdir().expect("tempdir");
     let roots = roots(temp.path());
@@ -529,11 +568,7 @@ fn selected_repository_batch_rejects_existing_skill_collision_before_writing() {
     let repository = temp.path().join("repo");
     write_skill(&repository, "repo-alpha", "First repository skill.");
     write_skill(&repository, "repo-beta", "Second repository skill.");
-    write_skill(
-        &roots.canonical_root,
-        "repo-beta",
-        "Existing canonical skill.",
-    );
+    write_skill(&roots.imports_root, "repo-beta", "Existing imported skill.");
     let provider = StaticRepositoryProvider {
         repository_path: repository,
     };
@@ -555,6 +590,52 @@ fn selected_repository_batch_rejects_existing_skill_collision_before_writing() {
     assert!(
         !roots.imports_root.join("repo-alpha").exists(),
         "collision should happen before writing any selected skill"
+    );
+}
+
+#[test]
+fn selected_repository_batch_allows_third_party_collision_for_replacement_drafts() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = roots(temp.path());
+    let repository = temp.path().join("repo");
+    write_skill(&repository, "repo-alpha", "First repository skill.");
+    write_skill(&repository, "repo-beta", "Second repository skill.");
+    write_skill(
+        &roots.canonical_root,
+        "repo-beta",
+        "Existing third-party skill.",
+    );
+    let provider = StaticRepositoryProvider {
+        repository_path: repository,
+    };
+
+    let result = import_repository_skill(
+        &roots,
+        ImportRepositoryRequest {
+            repository: "https://example.test/many.git",
+            selected_skill_paths: &["repo-alpha", "repo-beta"],
+        },
+        &provider,
+    )
+    .expect("third-party collision should not block draft imports");
+
+    let imports = match result {
+        RepositoryImportResult::ImportedBatch { imports } => imports,
+        result => panic!("expected imported batch, got {result:?}"),
+    };
+    assert_eq!(
+        imports
+            .iter()
+            .map(|import| import.skill_name.as_str())
+            .collect::<Vec<_>>(),
+        ["repo-alpha", "repo-beta"]
+    );
+    assert!(
+        roots
+            .imports_root
+            .join("repo-beta")
+            .join("import.json")
+            .exists()
     );
 }
 

@@ -155,6 +155,7 @@ fn run_with_services_with_defaults(
                 &roots,
                 workflow::OperationRequest::Promote(PromoteSkillRequest {
                     skill_name: skill_name.as_str(),
+                    overwrite: false,
                 }),
                 url_fetcher,
                 &repository_provider,
@@ -444,6 +445,7 @@ description: Imported from a URL through the command.
             &RootDefaults {
                 current_dir: catalog_repo.clone(),
                 home: Some(home.clone().into_os_string()),
+                agent_skills_repo: Some(catalog_repo.join("agent-skills").into_os_string()),
             },
         )
         .expect("tui command routes to runner");
@@ -451,7 +453,7 @@ description: Imported from a URL through the command.
         assert_eq!(
             runner.roots.borrow().as_ref(),
             Some(&DiscoveryRoots {
-                canonical_root: catalog_root,
+                canonical_root: catalog_repo.join("agent-skills").join("third-party"),
                 imports_root: catalog_repo.join(".skill-importer").join("imports"),
                 claude_code_root: home.join(".claude").join("skills"),
                 codex_root: home.join(".agents").join("skills"),
@@ -489,6 +491,7 @@ description: Imported from a URL through the command.
                 &RootDefaults {
                     current_dir: temp.path().to_path_buf(),
                     home,
+                    agent_skills_repo: None,
                 },
             )
             .expect("all root overrides should not require HOME");

@@ -141,6 +141,7 @@ pub struct DisableSkillRequest<'request> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PromoteSkillRequest<'request> {
     pub skill_name: &'request str,
+    pub overwrite: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -553,10 +554,7 @@ fn store_import(
 ) -> Result<ImportResult, ImportError> {
     let imports_root =
         canonicalize_existing_ancestor(&roots.imports_root).map_err(ImportError::Io)?;
-    refuse_collection_collision(
-        &metadata.name,
-        [roots.canonical_root.as_path(), imports_root.as_path()],
-    )?;
+    refuse_collection_collision(&metadata.name, [imports_root.as_path()])?;
 
     let skill_path = imports_root.join(&metadata.name);
     let manifest_path = skill_path.join("import.json");
@@ -689,26 +687,30 @@ pub fn promote_imported_skill(
     roots: &DiscoveryRoots,
     request: PromoteSkillRequest<'_>,
 ) -> Result<SkillOperationResult, SkillOperationFailure> {
-    let mut plan = preflight_promotion(roots, request.skill_name)?;
+    let mut plan = preflight_promotion(roots, request.skill_name, request.overwrite)?;
     let mut actions = Vec::new();
 
     create_directory_if_missing(plan.canonical_root.as_path(), None, &mut actions)?;
-    fs::create_dir(&plan.canonical_path)
-        .map_err(SkillOperationError::Io)
-        .map_err(|error| operation_failure(error, actions.clone()))?;
-    actions.push(SkillAction {
-        action: SkillActionKind::CreateDirectory,
-        agent: None,
-        path: plan.canonical_path.clone(),
-        target: None,
-        source: Some(plan.import_path.clone()),
-    });
-    copy_operation_skill_directory(
-        &plan.import_path,
-        &plan.canonical_path,
-        CopyMetadataPolicy::ExcludeTopLevelImportManifest,
-        &mut actions,
-    )?;
+    if plan.overwrite_existing {
+        replace_promoted_skill_from_import(&plan, &mut actions)?;
+    } else {
+        fs::create_dir(&plan.canonical_path)
+            .map_err(SkillOperationError::Io)
+            .map_err(|error| operation_failure(error, actions.clone()))?;
+        actions.push(SkillAction {
+            action: SkillActionKind::CreateDirectory,
+            agent: None,
+            path: plan.canonical_path.clone(),
+            target: None,
+            source: Some(plan.import_path.clone()),
+        });
+        copy_operation_skill_directory(
+            &plan.import_path,
+            &plan.canonical_path,
+            CopyMetadataPolicy::ExcludeTopLevelImportManifest,
+            &mut actions,
+        )?;
+    }
 
     plan.manifest.promoted = true;
     write_operation_import_manifest(&plan.manifest_path, &plan.manifest, &mut actions)?;
@@ -758,16 +760,6 @@ pub fn unpromote_imported_skill(
             agent: Some(relink.agent),
             path: relink.path.clone(),
             target: Some(plan.canonical_path.clone()),
-            source: None,
-        });
-        create_symlink(&plan.import_path, &relink.path)
-            .map_err(SkillOperationError::Io)
-            .map_err(|error| operation_failure(error, actions.clone()))?;
-        actions.push(SkillAction {
-            action: SkillActionKind::CreateSymlink,
-            agent: Some(relink.agent),
-            path: relink.path,
-            target: Some(plan.import_path.clone()),
             source: None,
         });
     }
@@ -1250,6 +1242,7 @@ struct PromotionPlan {
     manifest_path: PathBuf,
     manifest: ImportManifest,
     relinks: Vec<AgentRelinkPlan>,
+    overwrite_existing: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1292,9 +1285,16 @@ enum CopyMetadataPolicy {
 fn preflight_promotion(
     roots: &DiscoveryRoots,
     skill_name: &str,
+    overwrite: bool,
 ) -> Result<PromotionPlan, SkillOperationFailure> {
     let preflight = resolve_draft_import_preflight(roots, skill_name)?;
-    ensure_canonical_destination_available(skill_name, &preflight.canonical_path)?;
+    let overwrite_existing =
+        ensure_canonical_destination_available(skill_name, &preflight.canonical_path, overwrite)?;
+    ensure_no_other_canonical_skill_name_collision(
+        skill_name,
+        &preflight.canonical_root,
+        &preflight.canonical_path,
+    )?;
 
     let mut relinks = Vec::new();
     for agent in [SkillAgent::ClaudeCode, SkillAgent::Codex] {
@@ -1303,6 +1303,15 @@ fn preflight_promotion(
             Ok(AgentMutationState::Missing) => {}
             Ok(AgentMutationState::AlreadyCorrect) => {
                 relinks.push(AgentRelinkPlan { agent, path });
+            }
+            Err(error) if overwrite_existing => {
+                let already_points_to_promoted =
+                    agent_entry_points_to(&path, &preflight.canonical_path)
+                        .map_err(SkillOperationError::Io)
+                        .map_err(empty_operation_failure)?;
+                if !already_points_to_promoted {
+                    return Err(empty_operation_failure(error));
+                }
             }
             Err(error) => return Err(empty_operation_failure(error)),
         }
@@ -1316,6 +1325,7 @@ fn preflight_promotion(
         manifest_path: preflight.manifest_path,
         manifest: preflight.manifest,
         relinks,
+        overwrite_existing,
     })
 }
 
@@ -1476,8 +1486,21 @@ fn resolve_any_import_preflight(
 fn ensure_canonical_destination_available(
     skill_name: &str,
     canonical_path: &Path,
-) -> Result<(), SkillOperationFailure> {
+    overwrite: bool,
+) -> Result<bool, SkillOperationFailure> {
     match fs::symlink_metadata(canonical_path) {
+        Ok(metadata) if overwrite && metadata.is_dir() => {
+            let metadata = read_skill_metadata(canonical_path)
+                .map_err(SkillOperationError::Io)
+                .map_err(empty_operation_failure)?;
+            if !matches!(metadata, Some(metadata) if metadata.name == skill_name) {
+                return Err(empty_operation_failure(SkillOperationError::Collision {
+                    name: skill_name.to_string(),
+                    path: canonical_path.to_path_buf(),
+                }));
+            }
+            return Ok(true);
+        }
         Ok(_) => {
             return Err(empty_operation_failure(SkillOperationError::Collision {
                 name: skill_name.to_string(),
@@ -1488,7 +1511,158 @@ fn ensure_canonical_destination_available(
         Err(error) => return Err(empty_operation_failure(SkillOperationError::Io(error))),
     }
 
+    Ok(false)
+}
+
+fn ensure_no_other_canonical_skill_name_collision(
+    skill_name: &str,
+    canonical_root: &Path,
+    allowed_path: &Path,
+) -> Result<(), SkillOperationFailure> {
+    if !canonical_root.exists() {
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(canonical_root)
+        .map_err(SkillOperationError::Io)
+        .map_err(empty_operation_failure)?
+    {
+        let entry = entry
+            .map_err(SkillOperationError::Io)
+            .map_err(empty_operation_failure)?;
+        let path = entry.path();
+        if path == allowed_path {
+            continue;
+        }
+        if !collection_entry_is_skill_dir(&path)
+            .map_err(SkillOperationError::Io)
+            .map_err(empty_operation_failure)?
+        {
+            continue;
+        }
+        if let Some(metadata) = read_skill_metadata(&path)
+            .map_err(SkillOperationError::Io)
+            .map_err(empty_operation_failure)?
+            && metadata.name == skill_name
+        {
+            return Err(empty_operation_failure(SkillOperationError::Collision {
+                name: skill_name.to_string(),
+                path,
+            }));
+        }
+    }
+
     Ok(())
+}
+
+fn replace_promoted_skill_from_import(
+    plan: &PromotionPlan,
+    actions: &mut Vec<SkillAction>,
+) -> Result<(), SkillOperationFailure> {
+    let staging_path = unique_promotion_staging_path(&plan.canonical_root, &plan.skill_name)
+        .map_err(SkillOperationError::Io)
+        .map_err(|error| operation_failure(error, actions.clone()))?;
+    let mut staging_actions = Vec::new();
+    if let Err(failure) = copy_import_to_new_promoted_dir(plan, &staging_path, &mut staging_actions)
+    {
+        match fs::remove_dir_all(&staging_path) {
+            Ok(()) => return Err(operation_failure(failure.error, actions.clone())),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Err(operation_failure(failure.error, actions.clone()));
+            }
+            Err(_) => {
+                let mut failure_actions = actions.clone();
+                failure_actions.extend(staging_actions);
+                return Err(operation_failure(failure.error, failure_actions));
+            }
+        }
+    }
+
+    fs::remove_dir_all(&plan.canonical_path)
+        .map_err(SkillOperationError::Io)
+        .map_err(|error| operation_failure(error, actions.clone()))?;
+    actions.push(SkillAction {
+        action: SkillActionKind::RemoveDirectory,
+        agent: None,
+        path: plan.canonical_path.clone(),
+        target: None,
+        source: Some(plan.import_path.clone()),
+    });
+    if let Err(error) = fs::rename(&staging_path, &plan.canonical_path) {
+        let mut failure_actions = actions.clone();
+        failure_actions.extend(staging_actions);
+        return Err(operation_failure(
+            SkillOperationError::Io(io::Error::new(
+                error.kind(),
+                format!(
+                    "failed to replace {} with staged copy at {}: {error}",
+                    plan.canonical_path.display(),
+                    staging_path.display()
+                ),
+            )),
+            failure_actions,
+        ));
+    }
+    actions.extend(
+        staging_actions
+            .into_iter()
+            .map(|action| action_with_rebased_path(action, &staging_path, &plan.canonical_path)),
+    );
+
+    Ok(())
+}
+
+fn copy_import_to_new_promoted_dir(
+    plan: &PromotionPlan,
+    destination_path: &Path,
+    actions: &mut Vec<SkillAction>,
+) -> Result<(), SkillOperationFailure> {
+    fs::create_dir(destination_path)
+        .map_err(SkillOperationError::Io)
+        .map_err(|error| operation_failure(error, actions.clone()))?;
+    actions.push(SkillAction {
+        action: SkillActionKind::CreateDirectory,
+        agent: None,
+        path: destination_path.to_path_buf(),
+        target: None,
+        source: Some(plan.import_path.clone()),
+    });
+    copy_operation_skill_directory(
+        &plan.import_path,
+        destination_path,
+        CopyMetadataPolicy::ExcludeTopLevelImportManifest,
+        actions,
+    )
+}
+
+fn unique_promotion_staging_path(canonical_root: &Path, skill_name: &str) -> io::Result<PathBuf> {
+    for index in 0..1000 {
+        let candidate = canonical_root.join(format!(
+            ".{skill_name}.promotion-staging-{}-{index}",
+            std::process::id()
+        ));
+        match fs::symlink_metadata(&candidate) {
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(candidate),
+            Err(error) => return Err(error),
+        }
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        format!("could not allocate staging path for {skill_name}"),
+    ))
+}
+
+fn action_with_rebased_path(
+    mut action: SkillAction,
+    old_prefix: &Path,
+    new_prefix: &Path,
+) -> SkillAction {
+    if let Ok(suffix) = action.path.strip_prefix(old_prefix) {
+        action.path = new_prefix.join(suffix);
+    }
+    action
 }
 
 fn unsupported_or_unknown_import_error(
@@ -1890,10 +2064,7 @@ fn preflight_repository_imports(
                 path: imports_root.join(&metadata.name),
             });
         }
-        refuse_collection_collision(
-            &metadata.name,
-            [roots.canonical_root.as_path(), imports_root.as_path()],
-        )?;
+        refuse_collection_collision(&metadata.name, [imports_root.as_path()])?;
 
         let skill_path = imports_root.join(&metadata.name);
         let manifest_path = skill_path.join("import.json");

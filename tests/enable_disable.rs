@@ -6,39 +6,34 @@ use std::process::{Command, Output};
 use serde_json::Value;
 use skill_importer::{
     AgentEnablement, AgentEntryStatus, DisableSkillRequest, DiscoveryRoots, EnableSkillRequest,
-    ImportMarkdownRequest, SkillActionKind, SkillAgent, SkillOperationError, SkillSource,
-    disable_skill, discover_skills, enable_skill, import_markdown_skill,
+    ImportMarkdownRequest, PromoteSkillRequest, SkillActionKind, SkillAgent, SkillOperationError,
+    SkillSource, disable_skill, discover_skills, enable_skill, import_markdown_skill,
+    promote_imported_skill,
 };
 
 #[test]
-fn enabling_imported_skill_for_claude_creates_root_symlink_and_actions() {
+fn enabling_unpromoted_import_fails_without_creating_agent_symlink() {
     let temp = tempfile::tempdir().expect("tempdir");
     let roots = roots(temp.path());
-    let import = import_skill(&roots, "draft-helper");
+    import_skill(&roots, "draft-helper");
 
-    let result = enable_skill(
+    let error = enable_skill(
         &roots,
         EnableSkillRequest {
             skill_name: "draft-helper",
             agents: &[SkillAgent::ClaudeCode],
         },
     )
-    .expect("enable succeeds");
+    .expect_err("unpromoted import cannot be enabled");
 
-    let link = roots.claude_code_root.join("draft-helper");
-    assert_eq!(
-        fs::canonicalize(&link).expect("link target"),
-        import.skill_path
+    assert!(matches!(
+        error.error,
+        SkillOperationError::NotPromoted { name } if name == "draft-helper"
+    ));
+    assert!(
+        !roots.claude_code_root.join("draft-helper").exists(),
+        "failed enable should not create an agent symlink"
     );
-    assert_eq!(result.skill_name, "draft-helper");
-    assert_eq!(result.actions.len(), 2);
-    assert_eq!(result.actions[0].action, SkillActionKind::CreateDirectory);
-    assert_eq!(result.actions[0].agent, Some(SkillAgent::ClaudeCode));
-    assert_eq!(result.actions[0].path, roots.claude_code_root);
-    assert_eq!(result.actions[1].action, SkillActionKind::CreateSymlink);
-    assert_eq!(result.actions[1].agent, Some(SkillAgent::ClaudeCode));
-    assert_eq!(result.actions[1].path, link);
-    assert_eq!(result.actions[1].target, Some(import.skill_path));
 }
 
 #[test]
@@ -101,10 +96,56 @@ fn enabling_canonical_skill_for_codex_and_both_agents_updates_discovery() {
 }
 
 #[test]
-fn disabling_imported_skill_removes_only_managed_symlink_and_is_idempotent() {
+fn enabling_promoted_import_for_claude_creates_third_party_symlink_and_actions() {
     let temp = tempfile::tempdir().expect("tempdir");
     let roots = roots(temp.path());
     import_skill(&roots, "draft-helper");
+    skill_importer::promote_imported_skill(
+        &roots,
+        skill_importer::PromoteSkillRequest {
+            skill_name: "draft-helper",
+            overwrite: false,
+        },
+    )
+    .expect("promote");
+
+    let result = enable_skill(
+        &roots,
+        EnableSkillRequest {
+            skill_name: "draft-helper",
+            agents: &[SkillAgent::ClaudeCode],
+        },
+    )
+    .expect("enable succeeds");
+
+    let link = roots.claude_code_root.join("draft-helper");
+    let third_party =
+        fs::canonicalize(roots.canonical_root.join("draft-helper")).expect("third-party skill");
+    assert_eq!(fs::canonicalize(&link).expect("link target"), third_party);
+    assert_eq!(result.skill_name, "draft-helper");
+    assert_eq!(result.actions.len(), 2);
+    assert_eq!(result.actions[0].action, SkillActionKind::CreateDirectory);
+    assert_eq!(result.actions[0].agent, Some(SkillAgent::ClaudeCode));
+    assert_eq!(result.actions[0].path, roots.claude_code_root);
+    assert_eq!(result.actions[1].action, SkillActionKind::CreateSymlink);
+    assert_eq!(result.actions[1].agent, Some(SkillAgent::ClaudeCode));
+    assert_eq!(result.actions[1].path, link);
+    assert_eq!(result.actions[1].target, Some(third_party));
+}
+
+#[test]
+fn disabling_promoted_import_removes_only_managed_symlink_and_is_idempotent() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = roots(temp.path());
+    import_skill(&roots, "draft-helper");
+    skill_importer::promote_imported_skill(
+        &roots,
+        skill_importer::PromoteSkillRequest {
+            skill_name: "draft-helper",
+            overwrite: false,
+        },
+    )
+    .expect("promote");
     enable_skill(
         &roots,
         EnableSkillRequest {
@@ -141,6 +182,32 @@ fn disabling_imported_skill_removes_only_managed_symlink_and_is_idempotent() {
 }
 
 #[test]
+fn disabling_unpromoted_import_removes_legacy_managed_import_symlink() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = roots(temp.path());
+    let import = import_skill(&roots, "legacy-helper");
+    fs::create_dir_all(&roots.claude_code_root).expect("claude root");
+    let link = roots.claude_code_root.join("legacy-helper");
+    unix_fs::symlink(&import.skill_path, &link).expect("legacy import symlink");
+
+    let result = disable_skill(
+        &roots,
+        DisableSkillRequest {
+            skill_name: "legacy-helper",
+            agents: &[SkillAgent::ClaudeCode],
+        },
+    )
+    .expect("disable legacy import link");
+
+    assert_eq!(result.actions.len(), 1);
+    assert_eq!(result.actions[0].action, SkillActionKind::RemoveSymlink);
+    assert_eq!(result.actions[0].agent, Some(SkillAgent::ClaudeCode));
+    assert_eq!(result.actions[0].path, link);
+    assert_eq!(result.actions[0].target, Some(import.skill_path));
+    assert!(!roots.claude_code_root.join("legacy-helper").exists());
+}
+
+#[test]
 fn enable_and_disable_refuse_unsafe_agent_entries_without_mutating_them() {
     let cases = [
         UnsafeEntry::Directory,
@@ -154,6 +221,7 @@ fn enable_and_disable_refuse_unsafe_agent_entries_without_mutating_them() {
         let temp = tempfile::tempdir().expect("case tempdir");
         let roots = roots(temp.path());
         import_skill(&roots, "draft-helper");
+        promote_import(&roots, "draft-helper");
         place_unsafe_entry(&roots, "draft-helper", case);
 
         let error = enable_skill(
@@ -235,6 +303,7 @@ fn multi_agent_enable_and_disable_preflight_fail_without_earlier_mutation() {
     let temp = tempfile::tempdir().expect("tempdir");
     let roots = roots(temp.path());
     import_skill(&roots, "atomic-helper");
+    promote_import(&roots, "atomic-helper");
     fs::create_dir_all(&roots.codex_root).expect("codex root");
     fs::write(roots.codex_root.join("atomic-helper"), "mine").expect("unsafe codex file");
 
@@ -337,6 +406,7 @@ fn enable_and_disable_commands_emit_action_json() {
     let temp = tempfile::tempdir().expect("tempdir");
     let roots = roots(temp.path());
     import_skill(&roots, "command-helper");
+    promote_import(&roots, "command-helper");
 
     let output = skill_importer_command()
         .args([
@@ -387,7 +457,8 @@ fn enable_command_defaults_codex_root_to_user_level_skills_dir() {
     let temp = tempfile::tempdir().expect("tempdir");
     let catalog_repo = temp.path().join("skills-repo");
     let home = temp.path().join("home");
-    let canonical_skill = write_catalog_skill(&catalog_repo, "global-helper");
+    create_runtime_repo(&catalog_repo);
+    let canonical_skill = write_default_promoted_skill(&home, "global-helper");
 
     let output = run_default_enable_command(&catalog_repo, &home, &["codex"]);
 
@@ -421,7 +492,8 @@ fn enable_command_defaults_claude_code_root_to_user_level_skills_dir() {
     let temp = tempfile::tempdir().expect("tempdir");
     let catalog_repo = temp.path().join("skills-repo");
     let home = temp.path().join("home");
-    let canonical_skill = write_catalog_skill(&catalog_repo, "global-helper");
+    create_runtime_repo(&catalog_repo);
+    let canonical_skill = write_default_promoted_skill(&home, "global-helper");
 
     let output = run_default_enable_command(&catalog_repo, &home, &["claude-code"]);
 
@@ -459,7 +531,8 @@ fn enable_command_defaults_both_agent_roots_to_user_level_skills_dirs() {
     let temp = tempfile::tempdir().expect("tempdir");
     let catalog_repo = temp.path().join("skills-repo");
     let home = temp.path().join("home");
-    let canonical_skill = write_catalog_skill(&catalog_repo, "global-helper");
+    create_runtime_repo(&catalog_repo);
+    let canonical_skill = write_default_promoted_skill(&home, "global-helper");
 
     let output = run_default_enable_command(&catalog_repo, &home, &["claude-code", "codex"]);
 
@@ -509,7 +582,8 @@ fn enable_command_refuses_unsafe_entry_at_default_user_level_agent_root() {
         let temp = tempfile::tempdir().expect("tempdir");
         let catalog_repo = temp.path().join("skills-repo");
         let home = temp.path().join("home");
-        write_catalog_skill(&catalog_repo, "global-helper");
+        create_runtime_repo(&catalog_repo);
+        write_default_promoted_skill(&home, "global-helper");
         let unsafe_entry = user_level_agent_root(&home, SkillAgent::Codex).join("global-helper");
         place_default_unsafe_entry(&catalog_repo, &home, case);
 
@@ -535,6 +609,7 @@ fn disable_command_reports_unsafe_agent_entries() {
     let temp = tempfile::tempdir().expect("tempdir");
     let roots = roots(temp.path());
     import_skill(&roots, "unsafe-helper");
+    promote_import(&roots, "unsafe-helper");
     fs::create_dir_all(&roots.claude_code_root).expect("claude root");
     fs::write(roots.claude_code_root.join("unsafe-helper"), "mine").expect("regular file");
 
@@ -601,6 +676,17 @@ description: Imported for enablement tests.
     .expect("import skill")
 }
 
+fn promote_import(roots: &DiscoveryRoots, name: &str) {
+    promote_imported_skill(
+        roots,
+        PromoteSkillRequest {
+            skill_name: name,
+            overwrite: false,
+        },
+    )
+    .expect("promote import");
+}
+
 fn write_skill(root: &Path, name: &str) -> std::path::PathBuf {
     let skill_dir = root.join(name);
     fs::create_dir_all(&skill_dir).expect("skill dir");
@@ -618,10 +704,16 @@ description: Test skill.
     fs::canonicalize(skill_dir).expect("canonical skill dir")
 }
 
-fn write_catalog_skill(repo_root: &Path, name: &str) -> std::path::PathBuf {
-    fs::create_dir_all(repo_root).expect("catalog repo");
+fn create_runtime_repo(repo_root: &Path) {
+    fs::create_dir_all(repo_root.join("catalog").join("portable")).expect("catalog root");
     fs::write(repo_root.join("AGENTS.md"), "# Test catalog\n").expect("agents");
-    write_skill(&repo_root.join("catalog").join("portable"), name)
+}
+
+fn write_default_promoted_skill(home: &Path, name: &str) -> std::path::PathBuf {
+    write_skill(
+        &home.join("dev").join("agent-skills").join("third-party"),
+        name,
+    )
 }
 
 fn place_unsafe_entry(roots: &DiscoveryRoots, name: &str, case: UnsafeEntry) {
@@ -694,12 +786,11 @@ fn assert_entry_still_exists(path: &Path, case: UnsafeEntry) {
 
 fn run_default_enable_command(catalog_repo: &Path, home: &Path, agents: &[&str]) -> Output {
     let mut command = skill_importer_command();
-    command.current_dir(catalog_repo).env("HOME", home).args([
-        "enable",
-        "--json",
-        "--skill",
-        "global-helper",
-    ]);
+    command
+        .current_dir(catalog_repo)
+        .env("HOME", home)
+        .env_remove("AGENT_SKILLS_REPO")
+        .args(["enable", "--json", "--skill", "global-helper"]);
     for agent in agents {
         command.args(["--agent", agent]);
     }

@@ -53,12 +53,18 @@ struct OwnedSkillSource {
     path: PathBuf,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DraftImportPolicy {
+    Allow,
+    Reject,
+}
+
 pub(super) fn plan_enable(
     roots: &DiscoveryRoots,
     skill_name: &str,
     agents: &[SkillAgent],
 ) -> Result<EnablePlan, SkillOperationFailure> {
-    let source = resolve_owned_skill_source(roots, skill_name)?;
+    let source = resolve_owned_skill_source(roots, skill_name, DraftImportPolicy::Reject)?;
     let mut entries = Vec::new();
 
     for agent in unique_agents(agents) {
@@ -90,7 +96,7 @@ pub(super) fn plan_disable(
     skill_name: &str,
     agents: &[SkillAgent],
 ) -> Result<DisablePlan, SkillOperationFailure> {
-    let source = resolve_owned_skill_source(roots, skill_name)?;
+    let source = resolve_owned_skill_source(roots, skill_name, DraftImportPolicy::Allow)?;
     let mut entries = Vec::new();
 
     for agent in unique_agents(agents) {
@@ -114,6 +120,7 @@ pub(super) fn plan_disable(
 fn resolve_owned_skill_source(
     roots: &DiscoveryRoots,
     skill_name: &str,
+    draft_import_policy: DraftImportPolicy,
 ) -> Result<OwnedSkillSource, SkillOperationFailure> {
     let inventory = discover_skills(roots)
         .map_err(SkillOperationError::Io)
@@ -130,10 +137,18 @@ fn resolve_owned_skill_source(
 
     let source_path = match skill.source {
         SkillSource::Canonical => roots.canonical_root.join(skill_name),
-        SkillSource::Imported => canonicalize_existing_ancestor(&roots.imports_root)
-            .map_err(SkillOperationError::Io)
-            .map_err(empty_operation_failure)?
-            .join(skill_name),
+        SkillSource::Imported if skill.promoted => roots.canonical_root.join(skill_name),
+        SkillSource::Imported if draft_import_policy == DraftImportPolicy::Allow => {
+            canonicalize_existing_ancestor(&roots.imports_root)
+                .map_err(SkillOperationError::Io)
+                .map_err(empty_operation_failure)?
+                .join(skill_name)
+        }
+        SkillSource::Imported => {
+            return Err(empty_operation_failure(SkillOperationError::NotPromoted {
+                name: skill_name.to_string(),
+            }));
+        }
         SkillSource::AgentOnly => {
             return Err(empty_operation_failure(
                 SkillOperationError::UnsupportedSkillSource {
@@ -173,7 +188,9 @@ fn agent_root(roots: &DiscoveryRoots, agent: SkillAgent) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ImportMarkdownRequest, import_markdown_skill};
+    use crate::{
+        ImportMarkdownRequest, PromoteSkillRequest, import_markdown_skill, promote_imported_skill,
+    };
     use std::fs;
     use std::os::unix::fs as unix_fs;
     use std::path::Path;
@@ -196,14 +213,24 @@ mod tests {
     }
 
     #[test]
-    fn imported_skill_source_plans_enable_link_to_canonicalized_import_path() {
+    fn promoted_import_source_plans_enable_link_to_third_party_path() {
         let temp = tempfile::tempdir().expect("tempdir");
         let roots = roots(temp.path());
-        let import = import_skill(&roots, "helper");
+        import_skill(&roots, "helper");
+        promote_imported_skill(
+            &roots,
+            PromoteSkillRequest {
+                skill_name: "helper",
+                overwrite: false,
+            },
+        )
+        .expect("promote");
+        let third_party =
+            fs::canonicalize(roots.canonical_root.join("helper")).expect("third-party skill");
 
         let plan = plan_enable(&roots, "helper", &[SkillAgent::ClaudeCode]).expect("plan enable");
 
-        assert_eq!(plan.source_path, import.skill_path);
+        assert_eq!(plan.source_path, third_party);
         assert_eq!(plan.entries[0].path, roots.claude_code_root.join("helper"));
         assert_eq!(plan.entries[0].work, EnableEntryWork::CreateLink);
     }

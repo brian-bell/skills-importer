@@ -5,9 +5,9 @@ use std::process::Command;
 
 use serde_json::Value;
 use skill_importer::{
-    DiscoveryRoots, EnableSkillRequest, ImportLocalPathRequest, ImportMarkdownRequest,
-    PromoteSkillRequest, SkillActionKind, SkillAgent, SkillOperationError, UnpromoteSkillRequest,
-    enable_skill, import_local_path_skill, import_markdown_skill, promote_imported_skill,
+    DiscoveryRoots, ImportLocalPathRequest, ImportMarkdownRequest, PromoteSkillRequest,
+    SkillActionKind, SkillAgent, SkillOperationError, UnpromoteSkillRequest,
+    import_local_path_skill, import_markdown_skill, promote_imported_skill,
     unpromote_imported_skill,
 };
 
@@ -21,6 +21,7 @@ fn promotion_copies_imported_skill_without_import_manifest_and_marks_import_prom
         &roots,
         PromoteSkillRequest {
             skill_name: "draft-helper",
+            overwrite: false,
         },
     )
     .expect("promote succeeds");
@@ -51,6 +52,187 @@ fn promotion_copies_imported_skill_without_import_manifest_and_marks_import_prom
 }
 
 #[test]
+fn promotion_with_overwrite_replaces_existing_third_party_skill() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = roots(temp.path());
+    import_markdown(&roots, "replace-helper");
+    let destination = roots.canonical_root.join("replace-helper");
+    fs::create_dir_all(&destination).expect("destination dir");
+    fs::write(
+        destination.join("SKILL.md"),
+        skill_markdown("replace-helper"),
+    )
+    .expect("skill file");
+    fs::write(destination.join("stale.md"), "old").expect("stale file");
+    let canonical_destination = fs::canonicalize(&destination).expect("canonical destination");
+
+    let collision = promote_imported_skill(
+        &roots,
+        PromoteSkillRequest {
+            skill_name: "replace-helper",
+            overwrite: false,
+        },
+    )
+    .expect_err("overwrite must be explicit");
+    assert!(matches!(
+        collision.error,
+        SkillOperationError::Collision { name, ref path }
+            if name == "replace-helper" && *path == canonical_destination
+    ));
+
+    promote_imported_skill(
+        &roots,
+        PromoteSkillRequest {
+            skill_name: "replace-helper",
+            overwrite: true,
+        },
+    )
+    .expect("overwrite succeeds");
+
+    assert!(destination.join("SKILL.md").exists());
+    assert!(
+        !destination.join("stale.md").exists(),
+        "overwrite should replace only the promoted skill directory"
+    );
+}
+
+#[test]
+fn promotion_with_overwrite_keeps_existing_third_party_skill_when_copy_fails() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = roots(temp.path());
+    import_markdown(&roots, "replace-helper");
+    let import_dir = roots.imports_root.join("replace-helper");
+    unix_fs::symlink(
+        temp.path().join("missing-support"),
+        import_dir.join("unsupported-link"),
+    )
+    .expect("unsupported import entry");
+    let destination = roots.canonical_root.join("replace-helper");
+    fs::create_dir_all(&destination).expect("destination dir");
+    fs::write(
+        destination.join("SKILL.md"),
+        skill_markdown("replace-helper"),
+    )
+    .expect("skill file");
+    fs::write(destination.join("stale.md"), "old").expect("stale file");
+
+    promote_imported_skill(
+        &roots,
+        PromoteSkillRequest {
+            skill_name: "replace-helper",
+            overwrite: true,
+        },
+    )
+    .expect_err("unsupported import entry fails");
+
+    assert_eq!(
+        fs::read_to_string(destination.join("stale.md")).expect("old destination survives"),
+        "old"
+    );
+}
+
+#[test]
+fn promotion_with_overwrite_accepts_existing_third_party_agent_symlink() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = roots(temp.path());
+    import_markdown(&roots, "replace-helper");
+    let destination = roots.canonical_root.join("replace-helper");
+    fs::create_dir_all(&destination).expect("destination dir");
+    fs::write(
+        destination.join("SKILL.md"),
+        skill_markdown("replace-helper"),
+    )
+    .expect("skill file");
+    let canonical_destination = fs::canonicalize(&destination).expect("canonical destination");
+    create_import_symlink(
+        &roots,
+        SkillAgent::ClaudeCode,
+        "replace-helper",
+        &canonical_destination,
+    );
+
+    promote_imported_skill(
+        &roots,
+        PromoteSkillRequest {
+            skill_name: "replace-helper",
+            overwrite: true,
+        },
+    )
+    .expect("overwrite succeeds");
+
+    assert_eq!(
+        fs::canonicalize(roots.claude_code_root.join("replace-helper")).expect("claude target"),
+        canonical_destination
+    );
+}
+
+#[test]
+fn promotion_with_overwrite_refuses_differently_named_destination_skill() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = roots(temp.path());
+    import_markdown(&roots, "replace-helper");
+    let destination = roots.canonical_root.join("replace-helper");
+    fs::create_dir_all(&destination).expect("destination dir");
+    fs::write(destination.join("SKILL.md"), skill_markdown("other-helper")).expect("skill file");
+    let expected_path = fs::canonicalize(&destination).expect("canonical destination");
+
+    let error = promote_imported_skill(
+        &roots,
+        PromoteSkillRequest {
+            skill_name: "replace-helper",
+            overwrite: true,
+        },
+    )
+    .expect_err("mismatched destination fails");
+
+    assert!(matches!(
+        error.error,
+        SkillOperationError::Collision { name, ref path }
+            if name == "replace-helper" && *path == expected_path
+    ));
+    assert_eq!(
+        fs::read_to_string(destination.join("SKILL.md")).expect("existing destination survives"),
+        skill_markdown("other-helper")
+    );
+}
+
+#[test]
+fn promotion_refuses_third_party_frontmatter_name_collision() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = roots(temp.path());
+    import_markdown(&roots, "frontmatter-helper");
+    let colliding = roots.canonical_root.join("different-directory");
+    fs::create_dir_all(&colliding).expect("colliding third-party dir");
+    fs::write(
+        colliding.join("SKILL.md"),
+        skill_markdown("frontmatter-helper"),
+    )
+    .expect("colliding skill file");
+    let expected_path = fs::canonicalize(&colliding).expect("canonical collision path");
+
+    for overwrite in [false, true] {
+        let error = promote_imported_skill(
+            &roots,
+            PromoteSkillRequest {
+                skill_name: "frontmatter-helper",
+                overwrite,
+            },
+        )
+        .expect_err("frontmatter collision fails");
+
+        assert!(matches!(
+            error.error,
+            SkillOperationError::Collision { name, ref path }
+                if name == "frontmatter-helper" && *path == expected_path
+        ));
+        assert!(
+            !roots.canonical_root.join("frontmatter-helper").exists(),
+            "promotion should not create a duplicate third-party directory"
+        );
+    }
+}
+
+#[test]
 fn promotion_preserves_supporting_files_from_local_imports() {
     let temp = tempfile::tempdir().expect("tempdir");
     let roots = roots(temp.path());
@@ -70,6 +252,7 @@ fn promotion_preserves_supporting_files_from_local_imports() {
         &roots,
         PromoteSkillRequest {
             skill_name: "support-helper",
+            overwrite: false,
         },
     )
     .expect("promote succeeds");
@@ -92,19 +275,24 @@ fn promotion_relinks_enabled_import_symlinks_to_canonical_skill() {
     let temp = tempfile::tempdir().expect("tempdir");
     let roots = roots(temp.path());
     let import = import_markdown(&roots, "enabled-helper");
-    enable_skill(
+    create_import_symlink(
         &roots,
-        EnableSkillRequest {
-            skill_name: "enabled-helper",
-            agents: &[SkillAgent::ClaudeCode, SkillAgent::Codex],
-        },
-    )
-    .expect("enable both");
+        SkillAgent::ClaudeCode,
+        "enabled-helper",
+        &import.skill_path,
+    );
+    create_import_symlink(
+        &roots,
+        SkillAgent::Codex,
+        "enabled-helper",
+        &import.skill_path,
+    );
 
     let result = promote_imported_skill(
         &roots,
         PromoteSkillRequest {
             skill_name: "enabled-helper",
+            overwrite: false,
         },
     )
     .expect("promote succeeds");
@@ -136,25 +324,22 @@ fn promotion_relinks_enabled_import_symlinks_to_canonical_skill() {
 }
 
 #[test]
-fn unpromotion_removes_canonical_copy_marks_import_draft_and_relinks_enabled_agents() {
+fn unpromotion_removes_canonical_copy_marks_import_draft_and_removes_enabled_agents() {
     let temp = tempfile::tempdir().expect("tempdir");
     let roots = roots(temp.path());
-    let import = import_markdown(&roots, "enabled-helper");
-    enable_skill(
-        &roots,
-        EnableSkillRequest {
-            skill_name: "enabled-helper",
-            agents: &[SkillAgent::ClaudeCode, SkillAgent::Codex],
-        },
-    )
-    .expect("enable both");
+    import_markdown(&roots, "enabled-helper");
     promote_imported_skill(
         &roots,
         PromoteSkillRequest {
             skill_name: "enabled-helper",
+            overwrite: false,
         },
     )
     .expect("promote succeeds");
+    let canonical =
+        fs::canonicalize(roots.canonical_root.join("enabled-helper")).expect("canonical target");
+    create_import_symlink(&roots, SkillAgent::ClaudeCode, "enabled-helper", &canonical);
+    create_import_symlink(&roots, SkillAgent::Codex, "enabled-helper", &canonical);
 
     let result = unpromote_imported_skill(
         &roots,
@@ -172,13 +357,13 @@ fn unpromotion_removes_canonical_copy_marks_import_draft_and_relinks_enabled_age
             .join("import.json"),
     );
     assert_eq!(manifest["promoted"], false);
-    assert_eq!(
-        fs::canonicalize(roots.claude_code_root.join("enabled-helper")).expect("claude target"),
-        import.skill_path
+    assert!(
+        fs::symlink_metadata(roots.claude_code_root.join("enabled-helper")).is_err(),
+        "Claude Code symlink should be removed"
     );
-    assert_eq!(
-        fs::canonicalize(roots.codex_root.join("enabled-helper")).expect("codex target"),
-        import.skill_path
+    assert!(
+        fs::symlink_metadata(roots.codex_root.join("enabled-helper")).is_err(),
+        "Codex symlink should be removed"
     );
     assert!(
         result
@@ -199,20 +384,19 @@ fn promotion_refuses_canonical_collision_before_mutating() {
     let temp = tempfile::tempdir().expect("tempdir");
     let roots = roots(temp.path());
     let import = import_markdown(&roots, "collision-helper");
-    enable_skill(
+    create_import_symlink(
         &roots,
-        EnableSkillRequest {
-            skill_name: "collision-helper",
-            agents: &[SkillAgent::ClaudeCode],
-        },
-    )
-    .expect("enable");
+        SkillAgent::ClaudeCode,
+        "collision-helper",
+        &import.skill_path,
+    );
     write_skill(&roots.canonical_root, "collision-helper");
 
     let error = promote_imported_skill(
         &roots,
         PromoteSkillRequest {
             skill_name: "collision-helper",
+            overwrite: false,
         },
     )
     .expect_err("collision fails");
@@ -252,6 +436,7 @@ fn promotion_refuses_unsafe_agent_entries_without_mutating() {
             &roots,
             PromoteSkillRequest {
                 skill_name: "unsafe-helper",
+                overwrite: false,
             },
         )
         .expect_err("unsafe entry fails");
@@ -281,6 +466,7 @@ fn promotion_reports_unsupported_skill_entries_without_agent_entry_language() {
         &roots,
         PromoteSkillRequest {
             skill_name: "unsupported-entry-helper",
+            overwrite: false,
         },
     )
     .expect_err("unsupported source entry fails");
@@ -304,6 +490,7 @@ fn promotion_reports_unknown_unsupported_and_already_promoted_sources() {
         &roots,
         PromoteSkillRequest {
             skill_name: "missing-helper",
+            overwrite: false,
         },
     )
     .expect_err("unknown");
@@ -317,6 +504,7 @@ fn promotion_reports_unknown_unsupported_and_already_promoted_sources() {
         &roots,
         PromoteSkillRequest {
             skill_name: "canonical-helper",
+            overwrite: false,
         },
     )
     .expect_err("canonical unsupported");
@@ -333,6 +521,7 @@ fn promotion_reports_unknown_unsupported_and_already_promoted_sources() {
         &roots,
         PromoteSkillRequest {
             skill_name: "agent-helper",
+            overwrite: false,
         },
     )
     .expect_err("agent unsupported");
@@ -346,6 +535,7 @@ fn promotion_reports_unknown_unsupported_and_already_promoted_sources() {
         &roots,
         PromoteSkillRequest {
             skill_name: "promoted-helper",
+            overwrite: false,
         },
     )
     .expect("first promote");
@@ -353,6 +543,7 @@ fn promotion_reports_unknown_unsupported_and_already_promoted_sources() {
         &roots,
         PromoteSkillRequest {
             skill_name: "promoted-helper",
+            overwrite: false,
         },
     )
     .expect_err("already promoted");
@@ -375,6 +566,7 @@ fn promotion_leaves_repo_documentation_and_installer_files_untouched() {
         &roots,
         PromoteSkillRequest {
             skill_name: "scoped-helper",
+            overwrite: false,
         },
     )
     .expect("promote");
@@ -503,6 +695,15 @@ fn place_unsafe_entry(roots: &DiscoveryRoots, name: &str, case: UnsafeEntry) {
             unix_fs::symlink(other, path).expect("wrong managed symlink");
         }
     }
+}
+
+fn create_import_symlink(roots: &DiscoveryRoots, agent: SkillAgent, name: &str, target: &Path) {
+    let root = match agent {
+        SkillAgent::ClaudeCode => &roots.claude_code_root,
+        SkillAgent::Codex => &roots.codex_root,
+    };
+    fs::create_dir_all(root).expect("agent root");
+    unix_fs::symlink(target, root.join(name)).expect("agent symlink");
 }
 
 fn assert_entry_still_exists(path: &Path, case: UnsafeEntry) {

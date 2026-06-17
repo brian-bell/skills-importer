@@ -1,12 +1,13 @@
 # skill-importer
 
-Rust CLI and keyboard-first TUI for inspecting and managing local AI skill
-catalogs across canonical storage, imported storage, Claude Code skills, and
-Codex skills.
+Rust CLI and keyboard-first TUI for inspecting and managing local AI skills
+across promoted third-party storage, imported placeholder storage, Claude Code
+skills, and Codex skills.
 
 ## Features
 
-- Discover skills from canonical, imported, Claude Code, and Codex roots.
+- Discover skills from promoted third-party, imported, Claude Code, and Codex
+  roots.
 - Read skill metadata from `SKILL.md` frontmatter.
 - Report whether each skill is enabled for Claude Code, Codex, both, or neither.
 - Classify agent entries as managed symlinks, external symlinks, real
@@ -30,8 +31,8 @@ make check
 ```
 
 `make run-list` and `make run-tui` use disposable local roots under
-`.skill-importer/dev` for imports and agent roots. They default to a sibling
-skills repo at `../skills` for canonical skills:
+`.skill-importer/dev` for the companion agent-skills repo, imports, and agent
+roots:
 
 ```bash
 make run-list
@@ -46,15 +47,15 @@ make run-prod
 ```
 
 `make run-prod` runs `skill-importer tui` without root overrides. It uses
-normal CLI defaults for canonical and imported skills, while enable and disable
-actions can create or remove user-level symlinks in `~/.claude/skills` and
-`~/.agents/skills`.
+normal CLI defaults for promoted third-party and imported skills, while enable
+and disable actions can create or remove user-level symlinks in
+`~/.claude/skills` and `~/.agents/skills`.
 
 Override roots when needed:
 
 ```bash
-make run-list SKILLS_REPO=/path/to/skills
-make run-tui CANONICAL_ROOT=/path/to/catalog/portable
+make run-list AGENT_SKILLS_REPO=/path/to/agent-skills
+make run-tui CANONICAL_ROOT=/path/to/agent-skills/third-party
 ```
 
 ## JSON Commands
@@ -81,11 +82,12 @@ All commands accept root overrides:
 --codex-root PATH
 ```
 
-When launched inside a skills catalog repo with `AGENTS.md` and
-`catalog/portable/`, the default canonical root is that catalog. Otherwise, the
-fallback canonical root is the current directory. JSON commands without root
-overrides use the default imports root plus user-level agent roots:
-`~/.claude/skills` for Claude Code and `~/.agents/skills` for Codex.
+`AGENT_SKILLS_REPO` controls the companion repository root used for promoted
+third-party skills. When it is not set, the default is `~/dev/agent-skills`; the
+promoted root is always `<agent-skills-repo>/third-party`. JSON commands without
+root overrides use `.skill-importer/imports` under the detected runtime repo,
+plus user-level agent roots: `~/.claude/skills` for Claude Code and
+`~/.agents/skills` for Codex.
 
 Repository imports persist structured `source_repository` metadata in each
 import manifest. `skill-importer list --json` includes that metadata on imported
