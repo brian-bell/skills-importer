@@ -19,7 +19,8 @@ jobs:
       - name: Install Rust toolchain
         run: rustup toolchain install stable --profile minimal
 
-      - uses: mlugg/setup-zig@v2
+      - name: Install Zig
+        run: brew install zig
 
       - name: Install cargo-zigbuild
         run: cargo install cargo-zigbuild --locked

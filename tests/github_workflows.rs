@@ -28,6 +28,21 @@ fn main_workflow_runs_on_main_pushes() {
 }
 
 #[test]
+fn workflows_avoid_node20_action_runtime_warnings() {
+    for workflow_name in ["main", "pull-request", "release", "release-snapshot"] {
+        let yaml = workflow(workflow_name);
+
+        assert!(!yaml.contains("actions/checkout@v4"));
+        assert!(!yaml.contains("mlugg/setup-zig@"));
+    }
+
+    assert!(workflow("main").contains("actions/checkout@v6"));
+    assert!(workflow("pull-request").contains("actions/checkout@v6"));
+    assert!(workflow("release").contains("brew install zig"));
+    assert!(workflow("release-snapshot").contains("brew install zig"));
+}
+
+#[test]
 fn release_workflow_builds_tagged_releases() {
     let yaml = workflow("release");
 
