@@ -1290,6 +1290,11 @@ fn preflight_promotion(
     let preflight = resolve_draft_import_preflight(roots, skill_name)?;
     let overwrite_existing =
         ensure_canonical_destination_available(skill_name, &preflight.canonical_path, overwrite)?;
+    ensure_no_other_canonical_skill_name_collision(
+        skill_name,
+        &preflight.canonical_root,
+        &preflight.canonical_path,
+    )?;
 
     let mut relinks = Vec::new();
     for agent in [SkillAgent::ClaudeCode, SkillAgent::Codex] {
@@ -1498,6 +1503,47 @@ fn ensure_canonical_destination_available(
     }
 
     Ok(false)
+}
+
+fn ensure_no_other_canonical_skill_name_collision(
+    skill_name: &str,
+    canonical_root: &Path,
+    allowed_path: &Path,
+) -> Result<(), SkillOperationFailure> {
+    if !canonical_root.exists() {
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(canonical_root)
+        .map_err(SkillOperationError::Io)
+        .map_err(empty_operation_failure)?
+    {
+        let entry = entry
+            .map_err(SkillOperationError::Io)
+            .map_err(empty_operation_failure)?;
+        let path = entry.path();
+        if path == allowed_path {
+            continue;
+        }
+        if !collection_entry_is_skill_dir(&path)
+            .map_err(SkillOperationError::Io)
+            .map_err(empty_operation_failure)?
+        {
+            continue;
+        }
+        if let Some(metadata) = read_skill_metadata(&path)
+            .map_err(SkillOperationError::Io)
+            .map_err(empty_operation_failure)?
+            && metadata.name == skill_name
+        {
+            return Err(empty_operation_failure(SkillOperationError::Collision {
+                name: skill_name.to_string(),
+                path,
+            }));
+        }
+    }
+
+    Ok(())
 }
 
 fn replace_promoted_skill_from_import(

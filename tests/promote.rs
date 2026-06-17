@@ -167,6 +167,42 @@ fn promotion_with_overwrite_accepts_existing_third_party_agent_symlink() {
 }
 
 #[test]
+fn promotion_refuses_third_party_frontmatter_name_collision() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = roots(temp.path());
+    import_markdown(&roots, "frontmatter-helper");
+    let colliding = roots.canonical_root.join("different-directory");
+    fs::create_dir_all(&colliding).expect("colliding third-party dir");
+    fs::write(
+        colliding.join("SKILL.md"),
+        skill_markdown("frontmatter-helper"),
+    )
+    .expect("colliding skill file");
+    let expected_path = fs::canonicalize(&colliding).expect("canonical collision path");
+
+    for overwrite in [false, true] {
+        let error = promote_imported_skill(
+            &roots,
+            PromoteSkillRequest {
+                skill_name: "frontmatter-helper",
+                overwrite,
+            },
+        )
+        .expect_err("frontmatter collision fails");
+
+        assert!(matches!(
+            error.error,
+            SkillOperationError::Collision { name, ref path }
+                if name == "frontmatter-helper" && *path == expected_path
+        ));
+        assert!(
+            !roots.canonical_root.join("frontmatter-helper").exists(),
+            "promotion should not create a duplicate third-party directory"
+        );
+    }
+}
+
+#[test]
 fn promotion_preserves_supporting_files_from_local_imports() {
     let temp = tempfile::tempdir().expect("tempdir");
     let roots = roots(temp.path());
