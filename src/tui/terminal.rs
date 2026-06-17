@@ -1,4 +1,4 @@
-use std::{io, path::Path, process::Command};
+use std::{fs, io, path::Path, process::Command};
 
 use crossterm::{
     event::{self, Event, KeyCode},
@@ -72,6 +72,7 @@ fn run_event_loop(
             };
             match action_for_input(state.mode(), input) {
                 InputOutcome::Action(action) => {
+                    let action = prepare_action(roots, state, action);
                     handle_action(terminal, state, action, |request| {
                         execute_operation_request(
                             roots,
@@ -88,6 +89,23 @@ fn run_event_loop(
         }
     }
     Ok(())
+}
+
+fn prepare_action(roots: &DiscoveryRoots, state: &AppState, action: AppAction) -> AppAction {
+    if action == AppAction::BeginConfirmation(super::ConfirmationOperation::Promote)
+        && let Some(skill) = state.selected_detail()
+        && skill.source == crate::SkillSource::Imported
+        && !skill.promoted
+        && promoted_destination_is_directory(&roots.canonical_root.join(&skill.name))
+    {
+        return AppAction::BeginConfirmation(super::ConfirmationOperation::PromoteOverwrite);
+    }
+
+    action
+}
+
+fn promoted_destination_is_directory(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_dir())
 }
 
 fn handle_action<B: Backend>(
@@ -621,6 +639,101 @@ mod tests {
                 panic!("analyze should not return repository selection")
             }
         }
+    }
+
+    #[test]
+    fn prepare_action_uses_overwrite_confirmation_for_import_with_existing_destination() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let roots = roots(temp.path());
+        write_skill(&roots.canonical_root, "alpha", "Existing promoted skill.");
+        let state = AppState::new(SkillInventory {
+            skills: vec![skill("alpha", "Imported draft.", SkillSource::Imported)],
+            source_repositories: Vec::new(),
+        });
+
+        let action = prepare_action(
+            &roots,
+            &state,
+            AppAction::BeginConfirmation(crate::tui::ConfirmationOperation::Promote),
+        );
+
+        assert_eq!(
+            action,
+            AppAction::BeginConfirmation(crate::tui::ConfirmationOperation::PromoteOverwrite)
+        );
+    }
+
+    #[test]
+    fn prepare_action_does_not_infer_overwrite_for_canonical_skill() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let roots = roots(temp.path());
+        write_skill(&roots.canonical_root, "alpha", "Canonical skill.");
+        let state = AppState::new(SkillInventory {
+            skills: vec![skill("alpha", "Canonical skill.", SkillSource::Canonical)],
+            source_repositories: Vec::new(),
+        });
+
+        let action = prepare_action(
+            &roots,
+            &state,
+            AppAction::BeginConfirmation(crate::tui::ConfirmationOperation::Promote),
+        );
+
+        assert_eq!(
+            action,
+            AppAction::BeginConfirmation(crate::tui::ConfirmationOperation::Promote)
+        );
+    }
+
+    #[test]
+    fn prepare_action_does_not_offer_overwrite_for_file_destination() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let roots = roots(temp.path());
+        fs::create_dir_all(&roots.canonical_root).expect("canonical root");
+        fs::write(roots.canonical_root.join("alpha"), "not a skill dir").expect("file collision");
+        let state = AppState::new(SkillInventory {
+            skills: vec![skill("alpha", "Imported draft.", SkillSource::Imported)],
+            source_repositories: Vec::new(),
+        });
+
+        let action = prepare_action(
+            &roots,
+            &state,
+            AppAction::BeginConfirmation(crate::tui::ConfirmationOperation::Promote),
+        );
+
+        assert_eq!(
+            action,
+            AppAction::BeginConfirmation(crate::tui::ConfirmationOperation::Promote)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepare_action_does_not_offer_overwrite_for_broken_symlink_destination() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let roots = roots(temp.path());
+        fs::create_dir_all(&roots.canonical_root).expect("canonical root");
+        std::os::unix::fs::symlink(
+            temp.path().join("missing-destination"),
+            roots.canonical_root.join("alpha"),
+        )
+        .expect("broken symlink");
+        let state = AppState::new(SkillInventory {
+            skills: vec![skill("alpha", "Imported draft.", SkillSource::Imported)],
+            source_repositories: Vec::new(),
+        });
+
+        let action = prepare_action(
+            &roots,
+            &state,
+            AppAction::BeginConfirmation(crate::tui::ConfirmationOperation::Promote),
+        );
+
+        assert_eq!(
+            action,
+            AppAction::BeginConfirmation(crate::tui::ConfirmationOperation::Promote)
+        );
     }
 
     #[test]

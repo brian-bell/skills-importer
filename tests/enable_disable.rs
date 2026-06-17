@@ -760,12 +760,11 @@ fn assert_entry_still_exists(path: &Path, case: UnsafeEntry) {
 
 fn run_default_enable_command(catalog_repo: &Path, home: &Path, agents: &[&str]) -> Output {
     let mut command = skill_importer_command();
-    command.current_dir(catalog_repo).env("HOME", home).args([
-        "enable",
-        "--json",
-        "--skill",
-        "global-helper",
-    ]);
+    command
+        .current_dir(catalog_repo)
+        .env("HOME", home)
+        .env_remove("AGENT_SKILLS_REPO")
+        .args(["enable", "--json", "--skill", "global-helper"]);
     for agent in agents {
         command.args(["--agent", agent]);
     }

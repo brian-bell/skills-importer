@@ -57,6 +57,7 @@ pub struct SkillDetail {
     pub description: Option<String>,
     pub source: SkillSource,
     pub source_repository: Option<ImportSourceRepository>,
+    pub promoted: bool,
     pub enablement: AgentEnablement,
     pub agent_entries: AgentEntries,
     pub analysis_skill_dir: Option<PathBuf>,
@@ -165,10 +166,6 @@ impl AppState {
                     let operation = if operation == ConfirmationOperation::Promote && skill.promoted
                     {
                         ConfirmationOperation::Unpromote
-                    } else if operation == ConfirmationOperation::Promote
-                        && skill.source == SkillSource::Canonical
-                    {
-                        ConfirmationOperation::PromoteOverwrite
                     } else {
                         operation
                     };
@@ -223,6 +220,7 @@ impl AppState {
             description: skill.description.clone(),
             source: skill.source,
             source_repository: skill.source_repository.clone(),
+            promoted: skill.promoted,
             enablement: skill.enablement,
             agent_entries: skill.agent_entries.clone(),
             analysis_skill_dir: skill.analysis_skill_dir.clone(),

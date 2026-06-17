@@ -97,6 +97,76 @@ fn promotion_with_overwrite_replaces_existing_third_party_skill() {
 }
 
 #[test]
+fn promotion_with_overwrite_keeps_existing_third_party_skill_when_copy_fails() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = roots(temp.path());
+    import_markdown(&roots, "replace-helper");
+    let import_dir = roots.imports_root.join("replace-helper");
+    unix_fs::symlink(
+        temp.path().join("missing-support"),
+        import_dir.join("unsupported-link"),
+    )
+    .expect("unsupported import entry");
+    let destination = roots.canonical_root.join("replace-helper");
+    fs::create_dir_all(&destination).expect("destination dir");
+    fs::write(
+        destination.join("SKILL.md"),
+        skill_markdown("replace-helper"),
+    )
+    .expect("skill file");
+    fs::write(destination.join("stale.md"), "old").expect("stale file");
+
+    promote_imported_skill(
+        &roots,
+        PromoteSkillRequest {
+            skill_name: "replace-helper",
+            overwrite: true,
+        },
+    )
+    .expect_err("unsupported import entry fails");
+
+    assert_eq!(
+        fs::read_to_string(destination.join("stale.md")).expect("old destination survives"),
+        "old"
+    );
+}
+
+#[test]
+fn promotion_with_overwrite_accepts_existing_third_party_agent_symlink() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = roots(temp.path());
+    import_markdown(&roots, "replace-helper");
+    let destination = roots.canonical_root.join("replace-helper");
+    fs::create_dir_all(&destination).expect("destination dir");
+    fs::write(
+        destination.join("SKILL.md"),
+        skill_markdown("replace-helper"),
+    )
+    .expect("skill file");
+    let canonical_destination = fs::canonicalize(&destination).expect("canonical destination");
+    create_import_symlink(
+        &roots,
+        SkillAgent::ClaudeCode,
+        "replace-helper",
+        &canonical_destination,
+    );
+
+    promote_imported_skill(
+        &roots,
+        PromoteSkillRequest {
+            skill_name: "replace-helper",
+            overwrite: true,
+        },
+    )
+    .expect("overwrite succeeds");
+
+    assert_eq!(
+        fs::canonicalize(roots.claude_code_root.join("replace-helper")).expect("claude target"),
+        canonical_destination
+    );
+}
+
+#[test]
 fn promotion_preserves_supporting_files_from_local_imports() {
     let temp = tempfile::tempdir().expect("tempdir");
     let roots = roots(temp.path());

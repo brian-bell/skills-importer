@@ -695,33 +695,25 @@ pub fn promote_imported_skill(
 
     create_directory_if_missing(plan.canonical_root.as_path(), None, &mut actions)?;
     if plan.overwrite_existing {
-        fs::remove_dir_all(&plan.canonical_path)
+        replace_promoted_skill_from_import(&plan, &mut actions)?;
+    } else {
+        fs::create_dir(&plan.canonical_path)
             .map_err(SkillOperationError::Io)
             .map_err(|error| operation_failure(error, actions.clone()))?;
         actions.push(SkillAction {
-            action: SkillActionKind::RemoveDirectory,
+            action: SkillActionKind::CreateDirectory,
             agent: None,
             path: plan.canonical_path.clone(),
             target: None,
             source: Some(plan.import_path.clone()),
         });
+        copy_operation_skill_directory(
+            &plan.import_path,
+            &plan.canonical_path,
+            CopyMetadataPolicy::ExcludeTopLevelImportManifest,
+            &mut actions,
+        )?;
     }
-    fs::create_dir(&plan.canonical_path)
-        .map_err(SkillOperationError::Io)
-        .map_err(|error| operation_failure(error, actions.clone()))?;
-    actions.push(SkillAction {
-        action: SkillActionKind::CreateDirectory,
-        agent: None,
-        path: plan.canonical_path.clone(),
-        target: None,
-        source: Some(plan.import_path.clone()),
-    });
-    copy_operation_skill_directory(
-        &plan.import_path,
-        &plan.canonical_path,
-        CopyMetadataPolicy::ExcludeTopLevelImportManifest,
-        &mut actions,
-    )?;
 
     plan.manifest.promoted = true;
     write_operation_import_manifest(&plan.manifest_path, &plan.manifest, &mut actions)?;
@@ -1310,6 +1302,15 @@ fn preflight_promotion(
             Ok(AgentMutationState::AlreadyCorrect) => {
                 relinks.push(AgentRelinkPlan { agent, path });
             }
+            Err(error) if overwrite_existing => {
+                let already_points_to_promoted =
+                    agent_entry_points_to(&path, &preflight.canonical_path)
+                        .map_err(SkillOperationError::Io)
+                        .map_err(empty_operation_failure)?;
+                if !already_points_to_promoted {
+                    return Err(empty_operation_failure(error));
+                }
+            }
             Err(error) => return Err(empty_operation_failure(error)),
         }
     }
@@ -1500,6 +1501,116 @@ fn ensure_canonical_destination_available(
     }
 
     Ok(false)
+}
+
+fn replace_promoted_skill_from_import(
+    plan: &PromotionPlan,
+    actions: &mut Vec<SkillAction>,
+) -> Result<(), SkillOperationFailure> {
+    let staging_path = unique_promotion_staging_path(&plan.canonical_root, &plan.skill_name)
+        .map_err(SkillOperationError::Io)
+        .map_err(|error| operation_failure(error, actions.clone()))?;
+    let mut staging_actions = Vec::new();
+    if let Err(failure) = copy_import_to_new_promoted_dir(plan, &staging_path, &mut staging_actions)
+    {
+        match fs::remove_dir_all(&staging_path) {
+            Ok(()) => return Err(operation_failure(failure.error, actions.clone())),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Err(operation_failure(failure.error, actions.clone()));
+            }
+            Err(_) => {
+                let mut failure_actions = actions.clone();
+                failure_actions.extend(staging_actions);
+                return Err(operation_failure(failure.error, failure_actions));
+            }
+        }
+    }
+
+    fs::remove_dir_all(&plan.canonical_path)
+        .map_err(SkillOperationError::Io)
+        .map_err(|error| operation_failure(error, actions.clone()))?;
+    actions.push(SkillAction {
+        action: SkillActionKind::RemoveDirectory,
+        agent: None,
+        path: plan.canonical_path.clone(),
+        target: None,
+        source: Some(plan.import_path.clone()),
+    });
+    if let Err(error) = fs::rename(&staging_path, &plan.canonical_path) {
+        let mut failure_actions = actions.clone();
+        failure_actions.extend(staging_actions);
+        return Err(operation_failure(
+            SkillOperationError::Io(io::Error::new(
+                error.kind(),
+                format!(
+                    "failed to replace {} with staged copy at {}: {error}",
+                    plan.canonical_path.display(),
+                    staging_path.display()
+                ),
+            )),
+            failure_actions,
+        ));
+    }
+    actions.extend(
+        staging_actions
+            .into_iter()
+            .map(|action| action_with_rebased_path(action, &staging_path, &plan.canonical_path)),
+    );
+
+    Ok(())
+}
+
+fn copy_import_to_new_promoted_dir(
+    plan: &PromotionPlan,
+    destination_path: &Path,
+    actions: &mut Vec<SkillAction>,
+) -> Result<(), SkillOperationFailure> {
+    fs::create_dir(destination_path)
+        .map_err(SkillOperationError::Io)
+        .map_err(|error| operation_failure(error, actions.clone()))?;
+    actions.push(SkillAction {
+        action: SkillActionKind::CreateDirectory,
+        agent: None,
+        path: destination_path.to_path_buf(),
+        target: None,
+        source: Some(plan.import_path.clone()),
+    });
+    copy_operation_skill_directory(
+        &plan.import_path,
+        destination_path,
+        CopyMetadataPolicy::ExcludeTopLevelImportManifest,
+        actions,
+    )
+}
+
+fn unique_promotion_staging_path(canonical_root: &Path, skill_name: &str) -> io::Result<PathBuf> {
+    for index in 0..1000 {
+        let candidate = canonical_root.join(format!(
+            ".{skill_name}.promotion-staging-{}-{index}",
+            std::process::id()
+        ));
+        match fs::symlink_metadata(&candidate) {
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(candidate),
+            Err(error) => return Err(error),
+        }
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        format!("could not allocate staging path for {skill_name}"),
+    ))
+}
+
+fn action_with_rebased_path(
+    mut action: SkillAction,
+    old_prefix: &Path,
+    new_prefix: &Path,
+) -> SkillAction {
+    if let Ok(suffix) = action.path.strip_prefix(old_prefix) {
+        action.path = new_prefix.join(suffix);
+    }
+    action
 }
 
 fn unsupported_or_unknown_import_error(
