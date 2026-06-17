@@ -703,7 +703,7 @@ fn canonical_skill_with_duplicate_imports_keeps_first_imported_repository_metada
 }
 
 #[test]
-fn collection_symlink_outside_root_is_discovered_but_not_analyzable() {
+fn collection_symlink_outside_root_is_discovered_and_analyzable() {
     let temp = tempfile::tempdir().expect("tempdir");
     let canonical_root = temp.path().join("canonical");
     let external_root = temp.path().join("external");
@@ -721,7 +721,10 @@ fn collection_symlink_outside_root_is_discovered_but_not_analyzable() {
 
     let skill = find_skill(&inventory, "external-helper");
     assert_eq!(skill.source, SkillSource::Canonical);
-    assert_eq!(skill.analysis_skill_dir, None);
+    assert_eq!(
+        skill.analysis_skill_dir.as_deref(),
+        Some(fs::canonicalize(external).expect("external").as_path())
+    );
 }
 
 #[test]
@@ -776,6 +779,35 @@ fn agent_only_analysis_path_backfills_from_later_real_agent_directory() {
     assert_eq!(
         agent.analysis_skill_dir.as_deref(),
         Some(fs::canonicalize(codex).expect("codex").as_path())
+    );
+}
+
+#[test]
+fn agent_only_external_symlink_with_skill_metadata_is_analyzable() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let claude_root = temp.path().join("claude");
+    let external_root = temp.path().join("external");
+    fs::create_dir_all(&claude_root).expect("claude root");
+    let external = write_skill(&external_root, "external-agent", "External agent skill.");
+    unix_fs::symlink(&external, claude_root.join("external-agent")).expect("external symlink");
+
+    let inventory = discover_skills(&DiscoveryRoots {
+        canonical_root: temp.path().join("canonical"),
+        imports_root: temp.path().join("imports"),
+        claude_code_root: claude_root,
+        codex_root: temp.path().join("codex"),
+    })
+    .expect("discover");
+
+    let skill = find_skill(&inventory, "external-agent");
+    assert_eq!(skill.source, SkillSource::AgentOnly);
+    assert_eq!(
+        skill.agent_entries.claude_code,
+        AgentEntryStatus::ExternalSymlink
+    );
+    assert_eq!(
+        skill.analysis_skill_dir.as_deref(),
+        Some(fs::canonicalize(external).expect("external").as_path())
     );
 }
 

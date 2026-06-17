@@ -2174,7 +2174,6 @@ fn discover_skill_collection(
         return Ok(());
     }
 
-    let canonical_root = fs::canonicalize(root)?;
     let mut entries = fs::read_dir(root)?
         .map(|entry| entry.map(|entry| entry.path()))
         .collect::<io::Result<Vec<_>>>()?;
@@ -2191,7 +2190,7 @@ fn discover_skill_collection(
             } else {
                 ImportDiscoveryMetadata::default()
             };
-            let analysis_skill_dir = analysis_dir_for_collection_entry(&path, &canonical_root)?;
+            let analysis_skill_dir = analysis_dir_for_collection_entry(&path)?;
             merge_skill(
                 skills,
                 metadata,
@@ -2211,16 +2210,8 @@ struct ImportDiscoveryMetadata {
     source_repository: Option<ImportSourceRepository>,
 }
 
-fn analysis_dir_for_collection_entry(
-    path: &Path,
-    canonical_root: &Path,
-) -> io::Result<Option<PathBuf>> {
-    let canonical_path = fs::canonicalize(path)?;
-    if canonical_path.starts_with(canonical_root) {
-        Ok(Some(canonical_path))
-    } else {
-        Ok(None)
-    }
+fn analysis_dir_for_collection_entry(path: &Path) -> io::Result<Option<PathBuf>> {
+    fs::canonicalize(path).map(Some)
 }
 
 fn read_optional_import_metadata(skill_dir: &Path) -> io::Result<ImportDiscoveryMetadata> {
@@ -2262,7 +2253,6 @@ fn discover_agent_root(
         return Ok(());
     }
 
-    let canonical_root = fs::canonicalize(root)?;
     let mut entries = fs::read_dir(root)?
         .map(|entry| entry.map(|entry| entry.path()))
         .collect::<io::Result<Vec<_>>>()?;
@@ -2283,8 +2273,7 @@ fn discover_agent_root(
                 .into_owned(),
             description: None,
         });
-        let analysis_skill_dir =
-            agent_analysis_dir(&path, &canonical_root, status, readable_metadata.as_ref())?;
+        let analysis_skill_dir = agent_analysis_dir(&path, status, readable_metadata.as_ref())?;
 
         let skill = skills
             .entry(metadata.name.clone())
@@ -2314,20 +2303,17 @@ fn discover_agent_root(
 
 fn agent_analysis_dir(
     path: &Path,
-    canonical_root: &Path,
     status: AgentEntryStatus,
     metadata: Option<&SkillMetadata>,
 ) -> io::Result<Option<PathBuf>> {
-    if status != AgentEntryStatus::SkillDirectory || metadata.is_none() {
+    if status == AgentEntryStatus::BrokenSymlink
+        || status == AgentEntryStatus::Missing
+        || metadata.is_none()
+    {
         return Ok(None);
     }
 
-    let canonical_path = fs::canonicalize(path)?;
-    if canonical_path.starts_with(canonical_root) && path.join("SKILL.md").is_file() {
-        Ok(Some(canonical_path))
-    } else {
-        Ok(None)
-    }
+    fs::canonicalize(path).map(Some)
 }
 
 fn agent_entry_status(path: &Path, roots: &DiscoveryRoots) -> io::Result<AgentEntryStatus> {
