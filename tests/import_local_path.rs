@@ -348,7 +348,7 @@ fn local_directory_import_rejects_import_storage_inside_source() {
         "self-copy-helper",
         "Would contain its own import destination.",
     );
-    let imports_root = source.join(".skills-source").join("imports");
+    let imports_root = source.join(".skill-importer").join("imports");
     let roots = DiscoveryRoots {
         canonical_root: temp.path().join("canonical"),
         imports_root: imports_root.clone(),
@@ -365,7 +365,7 @@ fn local_directory_import_rejects_import_storage_inside_source() {
                 path,
                 fs::canonicalize(&source)
                     .expect("canonical source")
-                    .join(".skills-source")
+                    .join(".skill-importer")
                     .join("imports")
             );
             assert!(
@@ -392,7 +392,7 @@ fn local_directory_import_rejects_import_storage_inside_symlinked_source() {
     );
     let linked_source = temp.path().join("linked-source");
     unix_fs::symlink(&real_source, &linked_source).expect("source symlink");
-    let imports_root = real_source.join(".skills-source").join("imports");
+    let imports_root = real_source.join(".skill-importer").join("imports");
     let roots = DiscoveryRoots {
         canonical_root: temp.path().join("canonical"),
         imports_root: imports_root.clone(),
@@ -414,7 +414,7 @@ fn local_directory_import_rejects_import_storage_inside_symlinked_source() {
                 path,
                 fs::canonicalize(&real_source)
                     .expect("canonical real source")
-                    .join(".skills-source")
+                    .join(".skill-importer")
                     .join("imports")
             );
             assert!(
@@ -444,7 +444,7 @@ fn local_directory_import_rejects_import_storage_inside_symlink_parent_source() 
     unix_fs::symlink(real_source.join("nested"), &linked_nested).expect("nested source symlink");
     let imports_root = linked_nested
         .join("..")
-        .join(".skills-source")
+        .join(".skill-importer")
         .join("imports");
     let roots = DiscoveryRoots {
         canonical_root: temp.path().join("canonical"),
@@ -462,7 +462,7 @@ fn local_directory_import_rejects_import_storage_inside_symlink_parent_source() 
                 path,
                 fs::canonicalize(&real_source)
                     .expect("canonical real source")
-                    .join(".skills-source")
+                    .join(".skill-importer")
                     .join("imports")
             );
             assert!(
@@ -474,7 +474,7 @@ fn local_directory_import_rejects_import_storage_inside_symlink_parent_source() 
     }
 
     assert!(
-        !real_source.join(".skills-source").join("imports").exists(),
+        !real_source.join(".skill-importer").join("imports").exists(),
         "symlink-parent self-copy rejection should happen before creating import storage"
     );
 }
