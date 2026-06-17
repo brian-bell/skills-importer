@@ -65,6 +65,8 @@ fn goreleaser_config_builds_rust_archives_for_homebrew_tap() {
     );
     assert!(yaml.contains("homebrew_casks:"));
     assert!(yaml.contains("directory: Casks"));
+    assert!(yaml.contains("caveats:"));
+    assert!(yaml.contains("xattr -dr com.apple.quarantine"));
     assert!(yaml.contains("owner: brian-bell"));
     assert!(yaml.contains("name: homebrew-tap"));
 }
