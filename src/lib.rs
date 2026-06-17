@@ -554,10 +554,7 @@ fn store_import(
 ) -> Result<ImportResult, ImportError> {
     let imports_root =
         canonicalize_existing_ancestor(&roots.imports_root).map_err(ImportError::Io)?;
-    refuse_collection_collision(
-        &metadata.name,
-        [roots.canonical_root.as_path(), imports_root.as_path()],
-    )?;
+    refuse_collection_collision(&metadata.name, [imports_root.as_path()])?;
 
     let skill_path = imports_root.join(&metadata.name);
     let manifest_path = skill_path.join("import.json");
@@ -2012,10 +2009,7 @@ fn preflight_repository_imports(
                 path: imports_root.join(&metadata.name),
             });
         }
-        refuse_collection_collision(
-            &metadata.name,
-            [roots.canonical_root.as_path(), imports_root.as_path()],
-        )?;
+        refuse_collection_collision(&metadata.name, [imports_root.as_path()])?;
 
         let skill_path = imports_root.join(&metadata.name);
         let manifest_path = skill_path.join("import.json");

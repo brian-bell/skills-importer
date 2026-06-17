@@ -191,7 +191,7 @@ description: Missing delimiter.
 }
 
 #[test]
-fn markdown_import_refuses_canonical_and_import_collisions() {
+fn markdown_import_allows_third_party_collision_for_replacement_drafts() {
     let temp = tempfile::tempdir().expect("tempdir");
     let roots = DiscoveryRoots {
         canonical_root: temp.path().join("canonical"),
@@ -201,48 +201,33 @@ fn markdown_import_refuses_canonical_and_import_collisions() {
     };
 
     write_skill(&roots.canonical_root, "shared-name", "Already canonical.");
-    write_skill(&roots.imports_root, "already-imported", "Already imported.");
-
-    for (name, expected_path) in [
-        ("shared-name", roots.canonical_root.join("shared-name")),
-        (
-            "already-imported",
-            fs::canonicalize(&roots.imports_root)
-                .expect("canonical imports root")
-                .join("already-imported"),
-        ),
-    ] {
-        let markdown = format!(
-            r#"---
-name: {name}
+    let markdown = r#"---
+name: shared-name
 description: New pasted version.
 ---
-"#
-        );
-        let error = import_markdown_skill(
-            &roots,
-            ImportMarkdownRequest {
-                markdown: &markdown,
-                source_location: None,
-            },
-        )
-        .expect_err("import fails");
+"#;
 
-        match error {
-            ImportError::Collision {
-                name: actual_name,
-                path,
-            } => {
-                assert_eq!(actual_name, name);
-                assert_eq!(path, expected_path);
-            }
-            error => panic!("unexpected error: {error}"),
-        }
-    }
+    let import = import_markdown_skill(
+        &roots,
+        ImportMarkdownRequest {
+            markdown,
+            source_location: None,
+        },
+    )
+    .expect("canonical collision should not block draft import");
+
+    assert_eq!(import.skill_name, "shared-name");
+    assert!(
+        roots
+            .imports_root
+            .join("shared-name")
+            .join("import.json")
+            .exists()
+    );
 }
 
 #[test]
-fn markdown_import_refuses_frontmatter_name_collisions() {
+fn markdown_import_refuses_import_collisions() {
     let temp = tempfile::tempdir().expect("tempdir");
     let roots = DiscoveryRoots {
         canonical_root: temp.path().join("canonical"),
@@ -251,26 +236,20 @@ fn markdown_import_refuses_frontmatter_name_collisions() {
         codex_root: temp.path().join("codex"),
     };
 
-    let differently_named_dir = roots.canonical_root.join("different-directory");
-    fs::create_dir_all(&differently_named_dir).expect("canonical skill dir");
-    fs::write(
-        differently_named_dir.join("SKILL.md"),
-        r#"---
-name: semantic-name
-description: The frontmatter name is what discovery merges by.
+    write_skill(&roots.imports_root, "already-imported", "Already imported.");
+    let expected_path = fs::canonicalize(&roots.imports_root)
+        .expect("canonical imports root")
+        .join("already-imported");
+    let markdown = r#"---
+name: already-imported
+description: New pasted version.
 ---
-"#,
-    )
-    .expect("canonical skill file");
+"#;
 
     let error = import_markdown_skill(
         &roots,
         ImportMarkdownRequest {
-            markdown: r#"---
-name: semantic-name
-description: New pasted version.
----
-"#,
+            markdown,
             source_location: None,
         },
     )
@@ -278,11 +257,93 @@ description: New pasted version.
 
     match error {
         ImportError::Collision { name, path } => {
-            assert_eq!(name, "semantic-name");
-            assert_eq!(path, differently_named_dir);
+            assert_eq!(name, "already-imported");
+            assert_eq!(path, expected_path);
         }
         error => panic!("unexpected error: {error}"),
     }
+}
+
+#[test]
+fn markdown_import_refuses_import_frontmatter_name_collisions() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = DiscoveryRoots {
+        canonical_root: temp.path().join("canonical"),
+        imports_root: temp.path().join("imports"),
+        claude_code_root: temp.path().join("claude"),
+        codex_root: temp.path().join("codex"),
+    };
+    let differently_named_dir = roots.imports_root.join("different-directory");
+    fs::create_dir_all(&differently_named_dir).expect("imported skill dir");
+    fs::write(
+        differently_named_dir.join("SKILL.md"),
+        r#"---
+name: frontmatter-name
+description: Already imported.
+---
+"#,
+    )
+    .expect("imported skill file");
+
+    let markdown = r#"---
+name: frontmatter-name
+description: New pasted version.
+---
+"#;
+    let error = import_markdown_skill(
+        &roots,
+        ImportMarkdownRequest {
+            markdown,
+            source_location: None,
+        },
+    )
+    .expect_err("import fails");
+
+    match error {
+        ImportError::Collision { name, path } => {
+            assert_eq!(name, "frontmatter-name");
+            assert_eq!(
+                path,
+                fs::canonicalize(&differently_named_dir).expect("canonical import path")
+            );
+        }
+        error => panic!("unexpected error: {error}"),
+    }
+}
+
+#[test]
+fn markdown_import_allows_third_party_frontmatter_name_collisions() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = DiscoveryRoots {
+        canonical_root: temp.path().join("canonical"),
+        imports_root: temp.path().join("imports"),
+        claude_code_root: temp.path().join("claude"),
+        codex_root: temp.path().join("codex"),
+    };
+    let differently_named_dir = roots.canonical_root.join("different-directory");
+    write_skill(
+        &differently_named_dir,
+        "frontmatter-name",
+        "Already canonical.",
+    );
+
+    let markdown = r#"---
+name: {name}
+description: New pasted version.
+---
+"#
+    .replace("{name}", "frontmatter-name");
+
+    let import = import_markdown_skill(
+        &roots,
+        ImportMarkdownRequest {
+            markdown: &markdown,
+            source_location: None,
+        },
+    )
+    .expect("canonical frontmatter collision should not block draft import");
+
+    assert_eq!(import.skill_name, "frontmatter-name");
 }
 
 #[test]

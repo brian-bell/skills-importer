@@ -170,7 +170,7 @@ fn local_path_import_reports_invalid_sources_without_partial_storage() {
 }
 
 #[test]
-fn local_path_import_reuses_canonical_and_import_collision_behavior() {
+fn local_path_import_allows_third_party_collision_for_replacement_drafts() {
     let temp = tempfile::tempdir().expect("tempdir");
     let roots = DiscoveryRoots {
         canonical_root: temp.path().join("canonical"),
@@ -179,37 +179,55 @@ fn local_path_import_reuses_canonical_and_import_collision_behavior() {
         codex_root: temp.path().join("codex"),
     };
     write_skill(&roots.canonical_root, "shared-name", "Already canonical.");
+    let source = temp.path().join("source").join("shared-name");
+    write_skill(
+        temp.path().join("source").as_path(),
+        "shared-name",
+        "New local version.",
+    );
+
+    let import = import_local_path_skill(&roots, ImportLocalPathRequest { path: &source })
+        .expect("canonical collision should not block draft import");
+
+    assert_eq!(import.skill_name, "shared-name");
+    assert!(
+        roots
+            .imports_root
+            .join("shared-name")
+            .join("import.json")
+            .exists()
+    );
+}
+
+#[test]
+fn local_path_import_refuses_import_collisions() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = DiscoveryRoots {
+        canonical_root: temp.path().join("canonical"),
+        imports_root: temp.path().join("imports"),
+        claude_code_root: temp.path().join("claude"),
+        codex_root: temp.path().join("codex"),
+    };
     write_skill(&roots.imports_root, "already-imported", "Already imported.");
+    let expected_path = fs::canonicalize(&roots.imports_root)
+        .expect("canonical imports root")
+        .join("already-imported");
+    let source = temp.path().join("source").join("already-imported");
+    write_skill(
+        temp.path().join("source").as_path(),
+        "already-imported",
+        "New local version.",
+    );
 
-    for (name, expected_path) in [
-        ("shared-name", roots.canonical_root.join("shared-name")),
-        (
-            "already-imported",
-            fs::canonicalize(&roots.imports_root)
-                .expect("canonical imports root")
-                .join("already-imported"),
-        ),
-    ] {
-        let source = temp.path().join("source").join(name);
-        write_skill(
-            temp.path().join("source").as_path(),
-            name,
-            "New local version.",
-        );
+    let error = import_local_path_skill(&roots, ImportLocalPathRequest { path: &source })
+        .expect_err("import fails");
 
-        let error = import_local_path_skill(&roots, ImportLocalPathRequest { path: &source })
-            .expect_err("import fails");
-
-        match error {
-            ImportError::Collision {
-                name: actual_name,
-                path,
-            } => {
-                assert_eq!(actual_name, name);
-                assert_eq!(path, expected_path);
-            }
-            error => panic!("unexpected error: {error}"),
+    match error {
+        ImportError::Collision { name, path } => {
+            assert_eq!(name, "already-imported");
+            assert_eq!(path, expected_path);
         }
+        error => panic!("unexpected error: {error}"),
     }
 }
 
