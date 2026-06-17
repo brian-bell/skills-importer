@@ -1,2 +1,3 @@
 /target/
 /.skill-importer/
+.DS_Store
