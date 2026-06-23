@@ -234,14 +234,14 @@ validation). `main.zig` wires the net fetcher + unavailable repo provider, print
 
 ## Implementation phases (TDD; `zig build test` per phase)
 
-**Phase 1 — Scaffold + cross-cutting decisions.** `build.zig` (root_module
+- [x] **Phase 1 — Scaffold + cross-cutting decisions.** `build.zig` (root_module
 form), `build.zig.zon` (enum name, fingerprint, `minimum_zig_version=0.15.1`,
 empty deps), `src/root_test.zig` aggregator, Makefile stubs, `types.zig`. **Lock
 now:** full `ErrorInfo` union, complete `json_out.zig` emitter spec, `ArrayList`
 unmanaged convention, arena-per-operation, Writergate flush. *Gate:* `zig build`
 + `zig fmt --check`; aggregator runs.
 
-**Phase 2 — frontmatter + manifest + hashing + fsutil.** Both frontmatter
+- [x] **Phase 2 — frontmatter + manifest + hashing + fsutil.** Both frontmatter
 parsers + `validate_skill_name`; manifest read/write (dual newline); content
 hash (big-endian u64 length prefixes, POSIX path bytes, `file_name`-sorted, error
 on non-dir/non-file); fsutil symlink classify (no-follow), lexical target
@@ -250,39 +250,58 @@ resolution, recursive copy recreating symlinks, hand-rolled
 exact `sha256:…` (assert a **Zig-computed golden**, not the Rust value);
 markdown-string hash; symlink classify cases; ancestor canonicalize.
 
-**Phase 3 — discovery + JSON contract.** `discovery.zig` (full `merge_skill`,
+- [ ] **Phase 3 — discovery + JSON contract.** `discovery.zig` (full `merge_skill`,
 per-call-site sort keys) + complete `json_out.zig`. *Tests:* port `discovery.rs`
 (~25) + `list_command.rs` (~7) incl. the stable-enum-string test; add
 merge-collision + shared-prefix ordering unit tests. *Gate:* JSON-shape parity.
+  - [x] Added `discovery.zig` with missing-root handling, owned-root discovery,
+        agent-only entries, source precedence, imported repository metadata, and
+        source-repository aggregation.
+  - [x] Added `json_out.zig` with explicit inventory and import-result JSON
+        emitters for stable key order and enum strings.
+  - [x] Added focused Zig tests for discovery merge behavior and JSON shape.
+  - [ ] Port the full `discovery.rs` and `list_command.rs` suites.
+  - [ ] Complete parity checks for all list-command JSON cases.
 
-**Phase 4a — markdown/url/path imports + net.zig.** `import.zig`, local-import
+- [ ] **Phase 4a — markdown/url/path imports + net.zig.** `import.zig`, local-import
 guards, dual local hashing, `store_import` rollback; `net.zig` (writer-injection
 fetch, Allocating + size check, worker-thread 30s deadline, redirects). **Imports
 write to the v2 root.** *Tests:* `import_markdown.rs` (~8), `import_local_path.rs`
 (~14), `import_url.rs` (~5) incl. loopback HTTP + over-1MB.
+  - [x] Added markdown import validation, v2 import storage, `SKILL.md` writing,
+        `import.json` writing, content hashing, and ordered import actions.
+  - [x] Added import-result JSON output and command-level markdown import smoke.
+  - [ ] Add path imports, local import guards, rollback, and dual local hashing.
+  - [ ] Add URL imports and `net.zig`.
+  - [ ] Port the full markdown/path/url import suites.
 
-**Phase 4b — repository scan core + git.zig.** BFS depth-8 (no-follow),
+- [ ] **Phase 4b — repository scan core + git.zig.** BFS depth-8 (no-follow),
 strict-vs-IgnoreInvalid, normalized selectors, batch preflight + reverse-order
 rollback, `kind`-tagged selection JSON; `git.zig` via `Child.run` + fake
 provider. *Tests:* `import_repository.rs` (~20).
 
-**Phase 5a — enable/disable.** `skill_store.zig` planner+executor: asymmetric
+- [ ] **Phase 5a — enable/disable.** `skill_store.zig` planner+executor: asymmetric
 `DraftImportPolicy`, managed-symlink safety checks, `CreateDirectory`-before-
 `CreateSymlink`, source canonicalization, first-seen agent dedupe. *Tests:*
 `enable_disable.rs` (~15).
 
-**Phase 5b — promote/unpromote/delete.** `promote.zig`: both branches (fresh
+- [ ] **Phase 5b — promote/unpromote/delete.** `promote.zig`: both branches (fresh
 create+copy vs overwrite remove-then-rename), PID-named staging (0..1000), action
 rebasing, relink, manifest `promoted=true`; delete enabled-guard; `Unpromote`
 core (no CLI). *Tests:* `promote.rs` (~15), `delete_import.rs` (~7).
 
-**Phase 6 — workflow + CLI + main.** `workflow.zig` (incl. `Unpromote`);
+- [ ] **Phase 6 — workflow + CLI + main.** `workflow.zig` (incl. `Unpromote`);
 `cli.zig` hand-parser (independent per-root resolution, exact clap strings,
 hyphen-value handling, `tui` stub); `main.zig` wiring. *Tests:* `workflow.rs`
 (~6) incl. pretty-json-with-trailing-newline; port `cli.rs` unit tests.
 *Milestone: full CLI/JSON parity minus TUI/analyzer.*
+  - [x] Added minimal `main.zig` wiring for `list --json`, `import markdown
+        --json`, root flags, stdout newline/flush, and `tui` stub.
+  - [ ] Add `workflow.zig`.
+  - [ ] Add full `cli.zig` parser and parity tests.
+  - [ ] Wire remaining commands.
 
-**Phase 6.5 — CI/Release (one atomic PR, suite never red).** Rewrite all 4
+- [ ] **Phase 6.5 — CI/Release (one atomic PR, suite never red).** Rewrite all 4
 workflow YAMLs to **`setup-zig`@pinned-0.15.1** + `zig build test` + `zig fmt
 --check`; Makefile recipe bodies + `ROOT_FLAGS`/`--` arg-passing; `.goreleaser
 .yml` to **`builder: prebuilt`** with a darwin/linux × amd64/arm64 `zig build
@@ -293,8 +312,15 @@ with the Zig equivalents, drop the `!mlugg/setup-zig@` negative + `brew install
 zig` assertions, and swap `builder: rust`/rust-target-triples for `builder:
 prebuilt`. Map `make clippy`→no-op/`zig build test`; `make check`→`fmt-check +
 test`. Gate on local `goreleaser release --snapshot`.
+  - [x] Updated Makefile recipes for Zig build/test/fmt/check and v2 disposable
+        import roots.
+  - [x] Added `ZIG_DIRECT_TARGET=aarch64-macos.15.0` local workaround for Zig
+        0.15.1 build-runner linkage on newer macOS hosts.
+  - [ ] Update GitHub Actions workflows, GoReleaser config, and
+        `tests/github_workflows.rs`.
+  - [ ] Run snapshot release verification.
 
-**Phase 7 — TUI (deferred, separate effort).** Re-introduce `src/tui/**` using
+- [ ] **Phase 7 — TUI (deferred, separate effort).** Re-introduce `src/tui/**` using
 libvaxis or a hand-rolled termios+ANSI layer; port the reducer model and
 `tui_*.rs` tests against a headless backend. Out of scope for this plan's
 acceptance.
